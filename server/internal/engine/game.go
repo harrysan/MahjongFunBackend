@@ -358,9 +358,9 @@ type PlayerView struct {
 	HandCounts    [NumSeats]int    `json:"hand_counts"`
 	WallRemaining int              `json:"wall_remaining"`
 	LegalActions  []Action         `json:"legal_actions"`
-	Pending       []Seat           `json:"pending"`                 // seats that must act now
-	LastDiscard   *Tile            `json:"last_discard,omitempty"`  // set during a claim window
-	LastDiscarder Seat             `json:"last_discarder"`          // meaningful during a claim window
+	Pending       []Seat           `json:"pending"`                // seats that must act now
+	LastDiscard   *Tile            `json:"last_discard,omitempty"` // set during a claim window
+	LastDiscarder Seat             `json:"last_discarder"`         // meaningful during a claim window
 	Result        *Result          `json:"result,omitempty"`
 }
 

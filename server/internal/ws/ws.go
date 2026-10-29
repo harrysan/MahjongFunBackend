@@ -123,8 +123,9 @@ var (
 func (c *client) handle(env envelope) *room.Error {
 	if env.Type == "join_room" {
 		var d struct {
-			Room string `json:"room"`
-			Name string `json:"name"`
+			Room   string `json:"room"`
+			Name   string `json:"name"`
+			Create bool   `json:"create"` // make a new room instead of joining one
 		}
 		if err := decode(env.Data, &d); err != nil {
 			return errBadRequest
@@ -132,7 +133,7 @@ func (c *client) handle(env envelope) *room.Error {
 		if c.room != nil {
 			return errInRoom
 		}
-		r, s, err := c.rooms.Join(d.Room, d.Name, c)
+		r, s, err := c.rooms.Join(d.Room, d.Name, d.Create, c)
 		if err != nil {
 			return toError(err)
 		}
@@ -152,6 +153,14 @@ func (c *client) handle(env envelope) *room.Error {
 			return errBadRequest
 		}
 		c.room.AddBot(c.seat, d.Seat)
+	case "remove_bot":
+		var d struct {
+			Seat engine.Seat `json:"seat"`
+		}
+		if decode(env.Data, &d) != nil {
+			return errBadRequest
+		}
+		c.room.RemoveBot(c.seat, d.Seat)
 	case "update_settings":
 		var d room.Settings
 		if env.Data == nil || decode(env.Data, &d) != nil {

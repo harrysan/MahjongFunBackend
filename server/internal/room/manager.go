@@ -19,10 +19,11 @@ func NewManager(opts Options) *Manager {
 	return &Manager{opts: opts, rooms: map[string]*Room{}}
 }
 
-// Join seats a human in the named room, creating the room if needed.
-// The first human in a room becomes its host.
-func (m *Manager) Join(roomName, playerName string, c Client) (*Room, engine.Seat, error) {
-	roomName = strings.TrimSpace(roomName)
+// Join seats a human in the named room. With create, the room must not exist
+// yet and is made (its first human becomes host); without it, the room must
+// already exist.
+func (m *Manager) Join(roomName, playerName string, create bool, c Client) (*Room, engine.Seat, error) {
+	roomName = strings.ToUpper(strings.TrimSpace(roomName)) // codes are case-insensitive
 	playerName = strings.TrimSpace(playerName)
 	if !validName(roomName, MaxRoomNameLen) || !validName(playerName, MaxPlayerNameLen) {
 		return nil, -1, ErrBadName
@@ -30,7 +31,14 @@ func (m *Manager) Join(roomName, playerName string, c Client) (*Room, engine.Sea
 	for {
 		m.mu.Lock()
 		r := m.rooms[roomName]
-		if r == nil {
+		switch {
+		case r == nil && !create:
+			m.mu.Unlock()
+			return nil, -1, ErrRoomNotFound
+		case r != nil && create:
+			m.mu.Unlock()
+			return nil, -1, ErrRoomExists
+		case r == nil:
 			r = newRoom(roomName, m, m.opts)
 			m.rooms[roomName] = r
 		}
@@ -38,7 +46,10 @@ func (m *Manager) Join(roomName, playerName string, c Client) (*Room, engine.Sea
 
 		s, err := r.join(playerName, c)
 		if err == ErrRoomClosed {
-			continue // the room closed while we were joining; make a fresh one
+			if !create {
+				return nil, -1, ErrRoomNotFound
+			}
+			continue // a brand-new room cannot close before we join; just retry
 		}
 		if err != nil {
 			return nil, -1, err

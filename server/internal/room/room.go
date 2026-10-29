@@ -175,6 +175,25 @@ func (r *Room) AddBot(by, target engine.Seat) {
 	})
 }
 
+// RemoveBot frees a seat that holds a bot. Host only, before the game starts.
+func (r *Room) RemoveBot(by, target engine.Seat) {
+	r.post(func() {
+		switch {
+		case by != r.host:
+			r.sendError(by, ErrNotHost)
+		case r.game != nil:
+			r.sendError(by, ErrGameStarted)
+		case !target.Valid():
+			r.sendError(by, ErrBadSeat)
+		case r.seats[target].kind != seatBot:
+			r.sendError(by, ErrNotBot)
+		default:
+			r.seats[target] = seat{}
+			r.broadcastRoom()
+		}
+	})
+}
+
 // UpdateSettings changes the room options. Host only, not while a round runs.
 func (r *Room) UpdateSettings(by engine.Seat, st Settings) {
 	r.post(func() {

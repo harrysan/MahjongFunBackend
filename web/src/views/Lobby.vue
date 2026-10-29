@@ -1,69 +1,64 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useGameStore } from '../stores/game'
-import type { Settings } from '../types'
+import { cleanPrefs, toSettings, type Prefs } from '../settings'
+import SettingsForm from '../components/SettingsForm.vue'
 
 const game = useGameStore()
 const NAME_KEY = 'mahjong.name'
 const SETTINGS_KEY = 'mahjong.settings'
 
-const BOT_SPEEDS = [
-  { label: 'Kilat (0–0,2 detik)', min: 0, max: 200 },
-  { label: 'Cepat (0,2–0,6 detik)', min: 200, max: 600 },
-  { label: 'Normal (0,5–1,5 detik)', min: 500, max: 1500 },
-  { label: 'Santai (1,5–3 detik)', min: 1500, max: 3000 },
-  { label: 'Lambat (3–5 detik)', min: 3000, max: 5000 },
-]
-const TURN_OPTIONS = [10, 15, 20, 30, 45, 60, 0]
-const CLAIM_OPTIONS = [5, 10, 15, 20, 0]
-
-function seconds(n: number): string {
-  return n === 0 ? 'Tanpa batas' : `${n} detik`
-}
-
-function load<T>(key: string, fallback: T): T {
+function read(key: string): string | null {
   try {
-    const raw = localStorage.getItem(key)
-    return raw === null ? fallback : { ...fallback, ...JSON.parse(raw) }
+    return localStorage.getItem(key)
   } catch {
-    return fallback
+    return null
   }
 }
 
-function save(key: string, value: unknown) {
+function write(key: string, value: string) {
   try {
-    localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value))
+    localStorage.setItem(key, value)
   } catch {
     // storage unavailable; the choice is just not remembered
   }
 }
 
-function loadName(): string {
+function loadPrefs(): Prefs {
   try {
-    return localStorage.getItem(NAME_KEY) ?? ''
+    return cleanPrefs(JSON.parse(read(SETTINGS_KEY) ?? 'null'))
   } catch {
-    return ''
+    return cleanPrefs(null)
   }
 }
 
-const saved = load(SETTINGS_KEY, { botSpeed: 2, turn: 30, claim: 10 })
-const name = ref(loadName())
-const botSpeed = ref(BOT_SPEEDS[saved.botSpeed] ? saved.botSpeed : 2)
-const turn = ref(TURN_OPTIONS.includes(saved.turn) ? saved.turn : 30)
-const claim = ref(CLAIM_OPTIONS.includes(saved.claim) ? saved.claim : 10)
+const name = ref(read(NAME_KEY) ?? '')
+const prefs = ref<Prefs>(loadPrefs())
+// An invite link looks like ?room=ABCDE.
+const code = ref(new URL(location.href).searchParams.get('room')?.toUpperCase() ?? '')
+
+function playerName(): string {
+  const n = name.value.trim() || 'Pemain'
+  write(NAME_KEY, n)
+  return n
+}
+
+function savePrefs() {
+  write(SETTINGS_KEY, JSON.stringify(prefs.value))
+}
 
 function playSolo() {
-  const n = name.value.trim() || 'Pemain'
-  save(NAME_KEY, n)
-  save(SETTINGS_KEY, { botSpeed: botSpeed.value, turn: turn.value, claim: claim.value })
-  const speed = BOT_SPEEDS[botSpeed.value]
-  const settings: Settings = {
-    bot_delay_min_ms: speed.min,
-    bot_delay_max_ms: speed.max,
-    turn_seconds: turn.value,
-    claim_seconds: claim.value,
-  }
-  game.startSolo(n, settings)
+  savePrefs()
+  game.startSolo(playerName(), toSettings(prefs.value))
+}
+
+function createRoom() {
+  savePrefs()
+  game.createRoom(playerName(), toSettings(prefs.value))
+}
+
+function joinRoom() {
+  if (code.value.trim()) game.joinRoom(playerName(), code.value)
 }
 </script>
 
@@ -71,33 +66,42 @@ function playSolo() {
   <main class="lobby">
     <h1>Mahjong <span>Fun</span></h1>
     <p class="tagline">4 pemain, tanpa skor. Siapa yang hu duluan, dia yang menang.</p>
-    <form class="card" @submit.prevent="playSolo">
+
+    <div class="card">
       <label for="name">Nama kamu</label>
       <input id="name" v-model="name" maxlength="20" placeholder="Pemain" autocomplete="nickname" />
 
-      <fieldset>
-        <legend>Pengaturan</legend>
-        <label for="bot-speed">Waktu bot berpikir</label>
-        <select id="bot-speed" v-model.number="botSpeed">
-          <option v-for="(s, i) in BOT_SPEEDS" :key="i" :value="i">{{ s.label }}</option>
-        </select>
+      <p v-if="game.lobbyError" class="lobby-error" role="alert">{{ game.lobbyError }}</p>
 
-        <label for="turn">Batas waktu giliran</label>
-        <select id="turn" v-model.number="turn">
-          <option v-for="n in TURN_OPTIONS" :key="n" :value="n">{{ seconds(n) }}</option>
-        </select>
-        <small>Jika habis, tile yang baru diambil dibuang otomatis.</small>
+      <form v-if="code" class="join highlight" @submit.prevent="joinRoom">
+        <span class="join-title">Kamu diundang ke room <b>{{ code }}</b></span>
+        <button type="submit" class="primary">Gabung</button>
+      </form>
 
-        <label for="claim">Batas waktu klaim (chi/pung/kong/hu)</label>
-        <select id="claim" v-model.number="claim">
-          <option v-for="n in CLAIM_OPTIONS" :key="n" :value="n">{{ seconds(n) }}</option>
-        </select>
-        <small>Jika habis, dianggap pass.</small>
-      </fieldset>
+      <button type="button" class="primary" @click="playSolo">Main Solo (vs 3 Bot)</button>
+      <button type="button" class="secondary" @click="createRoom">Buat Room untuk Teman</button>
 
-      <button type="submit">Main Solo (vs 3 Bot)</button>
-      <p class="soon">Main bersama teman segera hadir.</p>
-    </form>
+      <form class="join" @submit.prevent="joinRoom">
+        <label for="code">Punya kode room?</label>
+        <div class="join-row">
+          <input
+            id="code"
+            v-model="code"
+            maxlength="32"
+            placeholder="Contoh: K7QX2"
+            autocomplete="off"
+            autocapitalize="characters"
+            spellcheck="false"
+          />
+          <button type="submit" class="secondary" :disabled="!code.trim()">Gabung</button>
+        </div>
+      </form>
+
+      <details class="settings" open>
+        <summary>Pengaturan (untuk room yang kamu buat)</summary>
+        <SettingsForm v-model="prefs" id-prefix="lobby" />
+      </details>
+    </div>
   </main>
 </template>
 
@@ -120,26 +124,15 @@ h1 span { color: #ffcf3f; }
   flex-direction: column;
   gap: 10px;
   width: 100%;
-  max-width: 360px;
+  max-width: 380px;
   padding: 20px;
   border-radius: 16px;
   background: rgba(0, 0, 0, 0.25);
   text-align: left;
 }
 label { color: #f3efe2; font-weight: 600; }
-fieldset {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 6px 0 0;
-  padding: 12px 14px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 12px;
-}
-legend { padding: 0 6px; color: #ffcf3f; font-weight: 700; }
-fieldset label { margin-top: 6px; font-size: 14px; }
-small { color: #9fbcab; font-size: 12px; }
-input, select {
+input {
+  min-width: 0;
   padding: 10px 12px;
   border-radius: 8px;
   border: 1px solid #2c6b4f;
@@ -148,19 +141,49 @@ input, select {
   font: inherit;
   font-size: 16px;
 }
-button {
-  margin-top: 6px;
+#code { flex: 1; text-transform: uppercase; letter-spacing: 2px; }
+.lobby-error {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #b3261e;
+  color: #fff;
+  font-size: 14px;
+}
+.primary, .secondary {
   padding: 12px;
   border: none;
   border-radius: 10px;
-  background: #ffcf3f;
-  color: #3a2a00;
   font: inherit;
   font-weight: 700;
-  font-size: 17px;
+  font-size: 16px;
   cursor: pointer;
-  box-shadow: 0 3px 0 #b8901c;
 }
-button:active { transform: translateY(2px); box-shadow: 0 1px 0 #b8901c; }
-.soon { margin: 4px 0 0; color: #9fbcab; font-size: 13px; text-align: center; }
+.primary { background: #ffcf3f; color: #3a2a00; box-shadow: 0 3px 0 #b8901c; }
+.primary:active { transform: translateY(2px); box-shadow: 0 1px 0 #b8901c; }
+.secondary { background: rgba(255, 255, 255, 0.14); color: #fff8e0; }
+.secondary:disabled { opacity: 0.5; cursor: default; }
+.join { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.join-row { display: flex; gap: 8px; }
+.join.highlight {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 207, 63, 0.15);
+  border: 1px solid rgba(255, 207, 63, 0.5);
+}
+.join-title { color: #fff8e0; }
+.join.highlight .primary { padding: 8px 16px; }
+.settings {
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+}
+.settings summary { cursor: pointer; color: #ffcf3f; font-weight: 700; }
+.settings[open] summary { margin-bottom: 10px; }
 </style>

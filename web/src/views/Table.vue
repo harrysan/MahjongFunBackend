@@ -2,7 +2,6 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useGameStore } from '../stores/game'
-import { useConnectionStore } from '../stores/connection'
 import { seatWind, tileName } from '../tiles'
 import Seat from '../components/Seat.vue'
 import Hand from '../components/Hand.vue'
@@ -11,8 +10,14 @@ import ActionBar from '../components/ActionBar.vue'
 import Tile from '../components/Tile.vue'
 
 const game = useGameStore()
-const conn = useConnectionStore()
-const { view, room, log, error, dice, deadline, timeLimit, mySeat, isHost, legal, result, discardable } = storeToRefs(game)
+const { view, room, log, error, dice, deadline, timeLimit, mySeat, isHost, isSolo, legal, result, discardable } = storeToRefs(game)
+
+// Leaving a running multiplayer round hands your seat to a bot; ask first.
+function exit() {
+  const running = view.value && !result.value
+  if (running && !isSolo.value && !window.confirm('Keluar dari permainan? Kursimu akan dimainkan bot.')) return
+  game.leave()
+}
 
 // Seats relative to me: play goes clockwise, so the next player sits on my left.
 const pos = computed(() => {
@@ -74,7 +79,8 @@ watch(
 <template>
   <main v-if="view" class="table">
     <header class="bar">
-      <button type="button" class="link" @click="game.leave()">← Keluar</button>
+      <button type="button" class="link" @click="exit">← Keluar</button>
+      <span v-if="!isSolo && room" class="room-code">Room <b>{{ room.room }}</b></span>
       <span class="wall">Sisa wall: <b>{{ view.wall_remaining }}</b></span>
     </header>
 
@@ -131,18 +137,10 @@ watch(
   </main>
 
   <main v-else class="loading">
-    <p v-if="conn.status === 'closed'">Koneksi ke server terputus.</p>
-    <p v-else>Menyiapkan meja…</p>
+    <p>Menyiapkan meja…</p>
     <button type="button" class="secondary" @click="game.leave()">Kembali</button>
   </main>
 
-  <div v-if="view && conn.status === 'closed'" class="overlay">
-    <div class="dialog">
-      <h2>Terputus</h2>
-      <p>Koneksi ke server terputus.</p>
-      <button type="button" class="primary" @click="game.leave()">Kembali ke lobby</button>
-    </div>
-  </div>
 </template>
 
 <style scoped>
@@ -155,7 +153,8 @@ watch(
 }
 .bar { display: flex; justify-content: space-between; align-items: center; color: #e8f1ea; }
 .link { background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 4px 0; }
-.wall b { color: #ffcf3f; }
+.wall b, .room-code b { color: #ffcf3f; }
+.room-code { letter-spacing: 1px; }
 
 .board {
   flex: 1;

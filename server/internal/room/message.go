@@ -92,6 +92,9 @@ var (
 	ErrNotInHand    = &Error{"tile_not_in_hand", "Tile tidak ada di tangan."}
 	ErrGameEnded    = &Error{"game_ended", "Ronde sudah selesai."}
 	ErrBadSettings  = &Error{"bad_settings", "Pengaturan tidak valid."}
+	ErrRoomNotFound = &Error{"room_not_found", "Room tidak ditemukan. Periksa kodenya."}
+	ErrRoomExists   = &Error{"room_exists", "Kode room sudah dipakai."}
+	ErrNotBot       = &Error{"not_bot", "Kursi itu tidak berisi bot."}
 )
 
 // engineError converts an engine error into a player-facing Error.

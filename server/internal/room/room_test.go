@@ -36,7 +36,7 @@ func (f *fakeClient) next(t *testing.T, typ string) Message {
 func TestJoinAndHost(t *testing.T) {
 	m := testManager()
 	a, b := newFakeClient(), newFakeClient()
-	r, s, err := m.Join("meja", "Ani", a)
+	r, s, err := m.Join("meja", "Ani", true, a)
 	if err != nil || s != 0 {
 		t.Fatalf("first join: seat %d err %v", s, err)
 	}
@@ -45,7 +45,7 @@ func TestJoinAndHost(t *testing.T) {
 		t.Errorf("room state after first join = %+v", st)
 	}
 
-	r2, s, err := m.Join("meja", "Budi", b)
+	r2, s, err := m.Join("meja", "Budi", false, b)
 	if err != nil || s != 1 || r2 != r {
 		t.Fatalf("second join: seat %d err %v same room %v", s, err, r2 == r)
 	}
@@ -85,18 +85,18 @@ func TestJoinAndHost(t *testing.T) {
 
 func TestJoinValidation(t *testing.T) {
 	m := testManager()
-	if _, _, err := m.Join("  ", "Ani", newFakeClient()); err != ErrBadName {
+	if _, _, err := m.Join("  ", "Ani", true, newFakeClient()); err != ErrBadName {
 		t.Errorf("empty room name: %v", err)
 	}
-	if _, _, err := m.Join("meja", "nama yang sangat panjang sekali", newFakeClient()); err != ErrBadName {
+	if _, _, err := m.Join("meja", "nama yang sangat panjang sekali", true, newFakeClient()); err != ErrBadName {
 		t.Errorf("long player name: %v", err)
 	}
 	for i := 0; i < engine.NumSeats; i++ {
-		if _, _, err := m.Join("penuh", "P", newFakeClient()); err != nil {
+		if _, _, err := m.Join("penuh", "P", i == 0, newFakeClient()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := m.Join("penuh", "P5", newFakeClient()); err != ErrRoomFull {
+	if _, _, err := m.Join("penuh", "P5", false, newFakeClient()); err != ErrRoomFull {
 		t.Errorf("fifth player: %v", err)
 	}
 }
@@ -104,7 +104,7 @@ func TestJoinValidation(t *testing.T) {
 func TestActBeforeStart(t *testing.T) {
 	m := testManager()
 	c := newFakeClient()
-	r, s, _ := m.Join("meja", "Ani", c)
+	r, s, _ := m.Join("meja", "Ani", true, c)
 	r.Act(s, engine.Action{Type: engine.ActionPass})
 	if e := c.next(t, MsgError).Data.(*Error); e != ErrNoGame {
 		t.Errorf("act before start: %v", e)
@@ -120,7 +120,7 @@ func TestActBeforeStart(t *testing.T) {
 func TestSoloRounds(t *testing.T) {
 	m := testManager()
 	c := newFakeClient()
-	r, me, err := m.Join("solo", "Ani", c)
+	r, me, err := m.Join("solo", "Ani", true, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,8 +187,8 @@ func TestSoloRounds(t *testing.T) {
 func TestLeaveDuringGameBotTakesOver(t *testing.T) {
 	m := testManager()
 	a, b := newFakeClient(), newFakeClient()
-	r, sa, _ := m.Join("meja", "Ani", a)
-	_, sb, _ := m.Join("meja", "Budi", b)
+	r, sa, _ := m.Join("meja", "Ani", true, a)
+	_, sb, _ := m.Join("meja", "Budi", false, b)
 	r.AddBot(sa, 2)
 	r.AddBot(sa, 3)
 	r.Start(sa)
@@ -262,8 +262,8 @@ func TestSettingsValidation(t *testing.T) {
 func TestUpdateSettings(t *testing.T) {
 	m := testManager()
 	a, b := newFakeClient(), newFakeClient()
-	r, sa, _ := m.Join("meja", "Ani", a)
-	_, sb, _ := m.Join("meja", "Budi", b)
+	r, sa, _ := m.Join("meja", "Ani", true, a)
+	_, sb, _ := m.Join("meja", "Budi", false, b)
 
 	want := Settings{BotDelayMinMs: 100, BotDelayMaxMs: 300, TurnSeconds: 15, ClaimSeconds: 5}
 	r.UpdateSettings(sb, want)
@@ -288,7 +288,7 @@ func TestUpdateSettings(t *testing.T) {
 func TestTimeouts(t *testing.T) {
 	m := NewManager(Options{BotDelay: noDelay, Seed: 5, TimeUnit: 5 * time.Millisecond})
 	c := newFakeClient()
-	r, me, _ := m.Join("lambat", "Ani", c)
+	r, me, _ := m.Join("lambat", "Ani", true, c)
 	r.UpdateSettings(me, Settings{TurnSeconds: 5, ClaimSeconds: 3})
 	for s := engine.Seat(1); s < engine.NumSeats; s++ {
 		r.AddBot(me, s)
@@ -339,5 +339,142 @@ func TestAutoDiscard(t *testing.T) {
 	}
 	if a := autoDiscard(engine.PlayerView{LegalActions: acts}); a.TileID != 30 {
 		t.Errorf("after a claim (no drawn tile): %+v", a)
+	}
+}
+
+func TestRoomCodes(t *testing.T) {
+	m := testManager()
+	if _, _, err := m.Join("ABC12", "Ani", false, newFakeClient()); err != ErrRoomNotFound {
+		t.Errorf("join unknown room: %v", err)
+	}
+	if m.Count() != 0 {
+		t.Error("a failed join must not create a room")
+	}
+	r, _, err := m.Join("abc12", "Ani", true, newFakeClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Name() != "ABC12" {
+		t.Errorf("room name %q, want it upper-cased", r.Name())
+	}
+	if _, _, err := m.Join("ABC12", "Budi", true, newFakeClient()); err != ErrRoomExists {
+		t.Errorf("create an existing room: %v", err)
+	}
+	if r2, s, err := m.Join(" Abc12 ", "Budi", false, newFakeClient()); err != nil || r2 != r || s != 1 {
+		t.Errorf("join by code in another case: seat %d err %v", s, err)
+	}
+}
+
+func TestRemoveBot(t *testing.T) {
+	m := testManager()
+	a, b := newFakeClient(), newFakeClient()
+	r, sa, _ := m.Join("meja", "Ani", true, a)
+	_, sb, _ := m.Join("meja", "Budi", false, b)
+
+	r.RemoveBot(sa, sb)
+	if e := a.next(t, MsgError).Data.(*Error); e != ErrNotBot {
+		t.Errorf("remove a human: %v", e)
+	}
+	r.AddBot(sa, 3)
+	r.RemoveBot(sb, 3)
+	if e := b.next(t, MsgError).Data.(*Error); e != ErrNotHost {
+		t.Errorf("non-host remove_bot: %v", e)
+	}
+	r.RemoveBot(sa, 3)
+	for {
+		st := a.next(t, MsgRoomState).Data.(RoomState)
+		if st.Seats[3].Kind == "empty" {
+			break
+		}
+	}
+}
+
+// TestMultiplayerRounds: two humans and two bots play full rounds. Each human
+// sees only their own hand and only the host may start the next round.
+func TestMultiplayerRounds(t *testing.T) {
+	m := testManager()
+	clients := []*fakeClient{newFakeClient(), newFakeClient()}
+	r, host, err := m.Join("teman", "Ani", true, clients[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, guest, err := m.Join("teman", "Budi", false, clients[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	seats := []engine.Seat{host, guest}
+	r.AddBot(host, 2)
+	r.AddBot(host, 3)
+	r.Start(guest) // only the host may start
+	if e := clients[1].next(t, MsgError).Data.(*Error); e != ErrNotHost {
+		t.Fatalf("guest start_game: %v", e)
+	}
+	r.Start(host)
+
+	type msgFrom struct {
+		who int
+		m   Message
+	}
+	all := make(chan msgFrom, 100)
+	stop := make(chan struct{})
+	defer close(stop)
+	for i, c := range clients {
+		go func(i int, c *fakeClient) {
+			for {
+				select {
+				case m := <-c.ch:
+					select {
+					case all <- msgFrom{i, m}:
+					case <-stop:
+						return
+					}
+				case <-stop:
+					return
+				}
+			}
+		}(i, c)
+	}
+
+	players := []*bot.Bot{bot.New(1), bot.New(2)}
+	const rounds = 3
+	ended := [2]int{}
+	deadline := time.After(30 * time.Second)
+	for ended[0] < rounds || ended[1] < rounds {
+		select {
+		case <-deadline:
+			t.Fatalf("rounds did not finish: %v", ended)
+		case x := <-all:
+			me := seats[x.who]
+			switch x.m.Type {
+			case MsgError:
+				e := x.m.Data.(*Error)
+				stale := e == ErrNotYourTurn || e == ErrIllegal || e == ErrNotInHand || e == ErrGameEnded
+				if !stale && !(x.who == 1 && e == ErrNotHost) {
+					t.Fatalf("player %d: unexpected error %v", x.who, e)
+				}
+			case MsgGameState:
+				v := x.m.Data.(GameState).PlayerView
+				if v.Seat != me || len(v.Hand) != v.HandCounts[me] {
+					t.Fatalf("player %d got a wrong view: seat %d, %d tiles vs count %d", x.who, v.Seat, len(v.Hand), v.HandCounts[me])
+				}
+				if len(v.LegalActions) > 0 && v.Phase != engine.PhaseEnded {
+					r.Act(me, players[x.who].Choose(v))
+				}
+			case MsgEvent:
+				ev := x.m.Data.(EventData)
+				if ev.Type == string(engine.EventDrew) && ev.Seat != me && ev.Tiles != nil {
+					t.Fatalf("player %d saw seat %d's draw", x.who, ev.Seat)
+				}
+				if ev.Type == string(engine.EventGameEnd) {
+					ended[x.who]++
+					if x.who == 1 && ended[1] < rounds {
+						r.NextRound(guest) // refused: not the host
+					}
+					if x.who == 0 && ended[0] < rounds {
+						r.NextRound(host)
+					}
+				}
+			}
+		}
 	}
 }

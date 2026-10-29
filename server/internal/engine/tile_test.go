@@ -38,7 +38,7 @@ func TestKindHelpers(t *testing.T) {
 	if !KindEast.IsHonor() || KindEast.IsSuited() || KindEast.IsBonus() {
 		t.Errorf("East helpers wrong")
 	}
-	if !KindFlower1.IsBonus() || !(KindSeason1+3).IsBonus() || KindWhite.IsBonus() {
+	if !KindFlower1.IsBonus() || !(KindSeason1 + 3).IsBonus() || KindWhite.IsBonus() {
 		t.Errorf("bonus helpers wrong")
 	}
 	if KindBamboo1.String() != "B1" || KindRed.String() != "Red" || KindSeason1.String() != "Season1" {

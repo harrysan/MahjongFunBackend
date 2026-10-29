@@ -9,7 +9,8 @@ Game mahjong berbasis web (4 pemain, manusia atau bot). Aturan lengkap ada di [S
 - [x] M2: chi/pung/kong, jendela klaim, prioritas klaim, hu dari buangan, kong sendiri
 - [x] M3: bot v1 (`server/internal/bot`, simulasi: `go run ./cmd/sim`)
 - [x] M4: WebSocket + UI meja, solo vs 3 bot bisa dimainkan; tile memakai gambar di `web/src/assets/tiles`; pengaturan waktu bot berpikir, timer giliran dan klaim
-- [ ] M5: lobby, multiplayer manusia
+- [x] M5: lobby (solo, buat room, gabung via kode/tautan), ruang tunggu, multiplayer manusia
+- [ ] M6: reconnect, polish, deploy
 
 ## Menjalankan test engine
 

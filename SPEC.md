@@ -39,7 +39,7 @@ mahjong/
     src/
       stores/     # Pinia: connection, game state
       components/ # Tile, Hand, DiscardPile, ActionBar, Seat
-      views/      # Lobby, Table
+      views/      # Lobby, WaitingRoom, Table
 ```
 
 Aturan penting: paket `engine` tidak boleh mengimpor paket lain dari proyek.
@@ -172,8 +172,9 @@ Semua pesan: `{"type": "...", "data": {...}}`.
 
 | type | data | Keterangan |
 |---|---|---|
-| `join_room` | `{room, name}` | Masuk/buat room |
-| `add_bot` | `{seat}` | Isi kursi dengan bot |
+| `join_room` | `{room, name, create?}` | `create: true` membuat room baru (gagal jika kode sudah dipakai); tanpa `create` hanya masuk ke room yang sudah ada. Kode room tidak peka huruf besar/kecil |
+| `add_bot` | `{seat}` | Hanya host, sebelum mulai. Isi kursi kosong dengan bot |
+| `remove_bot` | `{seat}` | Hanya host, sebelum mulai. Kosongkan kursi bot |
 | `update_settings` | `{bot_delay_min_ms, bot_delay_max_ms, turn_seconds, claim_seconds}` | Hanya host, tidak saat ronde berjalan. Timeout 0 = tanpa batas |
 | `start_game` | `{}` | Hanya host |
 | `discard` | `{tile_id}` | Buang tile |
@@ -225,7 +226,8 @@ Bot memakai `LegalActions` dari engine, tidak punya aturan sendiri.
 ## 9. Frontend
 
 Halaman:
-- **Lobby:** buat/join room, tambah bot, mulai.
+- **Lobby:** nama, main solo, buat room, gabung dengan kode atau tautan undangan (`?room=KODE`).
+- **Ruang tunggu:** kode room, daftar kursi, host menambah/menghapus bot dan mengubah pengaturan, lalu mulai.
 - **Table:** 4 kursi (diri sendiri di bawah), tangan, tile buangan per pemain, set terbuka, bonus tile, sisa wall, tombol aksi (Chi/Pung/Kong/Hu/Pass), penghitung waktu.
 
 Tile dirender dengan SVG atau emoji/Unicode mahjong dulu. Aset gambar bisa diganti belakangan.

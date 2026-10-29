@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useConnectionStore } from './connection'
 import { tileName } from '../tiles'
 import type { Action, GameEvent, GameResult, PlayerView, RoomState, Seat, ServerMessage, Settings } from '../types'
@@ -11,6 +11,31 @@ const MELD_VERBS: Record<string, string> = {
   concealed_kong: 'kong tertutup',
 }
 const MAX_LOG = 40
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no 0/O, 1/I
+const SOLO_PREFIX = 'SOLO-'
+
+function randomCode(n: number): string {
+  let s = ''
+  for (let i = 0; i < n; i++) s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]
+  return s
+}
+
+/** Show the room code in the address bar so it can be shared as an invite link. */
+function setURLRoom(code: string | null) {
+  const url = new URL(location.href)
+  if (code) url.searchParams.set('room', code)
+  else url.searchParams.delete('room')
+  history.replaceState(null, '', url)
+}
+
+/** A join_room request that the server has not confirmed yet. */
+interface PendingJoin {
+  name: string
+  code: string
+  create: boolean
+  solo: boolean
+  settings?: Settings
+}
 
 /**
  * Everything the table shows. It is filled only from server messages;
@@ -27,11 +52,15 @@ export const useGameStore = defineStore('game', () => {
   // Clock of the current turn / claim window, as local timestamps (ms).
   const deadline = ref<number | null>(null)
   const timeLimit = ref(0)
+  // Why the last attempt to enter a room failed; shown in the lobby.
+  const lobbyError = ref<string | null>(null)
+  let pending: PendingJoin | null = null
   let errorTimer: number | undefined
   let diceTimer: number | undefined
 
   const mySeat = computed(() => room.value?.your_seat ?? 0)
   const isHost = computed(() => room.value !== null && room.value.host === room.value.your_seat)
+  const isSolo = computed(() => room.value?.room.startsWith(SOLO_PREFIX) ?? false)
   const legal = computed<Action[]>(() => view.value?.legal_actions ?? [])
   const result = computed<GameResult | undefined>(() => view.value?.result)
   const discardable = computed(() => new Set(legal.value.filter((a) => a.type === 'discard').map((a) => a.tile_id)))
@@ -89,6 +118,7 @@ export const useGameStore = defineStore('game', () => {
   function onMessage(m: ServerMessage) {
     switch (m.type) {
       case 'room_state':
+        if (!room.value) onJoined(m.data)
         room.value = m.data
         break
       case 'game_state':
@@ -107,7 +137,8 @@ export const useGameStore = defineStore('game', () => {
         onEvent(m.data)
         break
       case 'error':
-        showError(m.data.message)
+        if (!room.value && pending) onJoinFailed(m.data.code, m.data.message)
+        else showError(m.data.message)
         break
       case 'claim_window':
         // The same options are in game_state.legal_actions; nothing extra to store yet.
@@ -115,20 +146,72 @@ export const useGameStore = defineStore('game', () => {
     }
   }
 
+  function sendJoin(p: PendingJoin) {
+    pending = p
+    conn.send('join_room', { room: p.code, name: p.name, create: p.create })
+  }
+
+  function onJoined(st: RoomState) {
+    const p = pending
+    pending = null
+    if (!p?.solo) setURLRoom(st.room)
+    if (!p?.create) return
+    if (p.settings) conn.send('update_settings', p.settings)
+    if (p.solo) {
+      for (let s = 1; s < 4; s++) conn.send('add_bot', { seat: s })
+      conn.send('start_game')
+    }
+  }
+
+  function onJoinFailed(code: string, message: string) {
+    if (code === 'room_exists' && pending?.create) {
+      // Random code collided with an open room; try another one.
+      sendJoin({ ...pending, code: (pending.solo ? SOLO_PREFIX : '') + randomCode(pending.solo ? 8 : 5) })
+      return
+    }
+    pending = null
+    conn.disconnect()
+    lobbyError.value = message
+  }
+
+  // The server could not be reached, or dropped us before we got in.
+  watch(
+    () => conn.status,
+    (st) => {
+      if (st === 'closed' && !room.value) {
+        pending = null
+        conn.disconnect()
+        lobbyError.value = 'Tidak bisa terhubung ke server.'
+      }
+    },
+  )
+
+  function enter(p: PendingJoin) {
+    reset()
+    lobbyError.value = null
+    conn.connect(onMessage)
+    sendJoin(p)
+  }
+
   /** Solo mode: a private room with three bots, started right away (SPEC 1). */
   function startSolo(name: string, settings: Settings) {
-    reset()
-    conn.connect(onMessage)
-    const roomName = 'solo-' + Math.random().toString(36).slice(2, 10)
-    conn.send('join_room', { room: roomName, name })
-    conn.send('update_settings', settings)
-    for (let s = 1; s < 4; s++) conn.send('add_bot', { seat: s })
-    conn.send('start_game')
+    enter({ name, code: SOLO_PREFIX + randomCode(8), create: true, solo: true, settings })
+  }
+
+  /** Make a new room for friends; the caller becomes host. */
+  function createRoom(name: string, settings: Settings) {
+    enter({ name, code: randomCode(5), create: true, solo: false, settings })
+  }
+
+  function joinRoom(name: string, code: string) {
+    enter({ name, code: code.trim().toUpperCase(), create: false, solo: false })
   }
 
   function leave() {
+    pending = null
     conn.disconnect()
     reset()
+    setURLRoom(null)
   }
 
   function reset() {
@@ -138,6 +221,23 @@ export const useGameStore = defineStore('game', () => {
     dice.value = null
     error.value = null
     deadline.value = null
+  }
+
+  // Waiting room, host only (the server checks).
+  function addBot(seat: Seat) {
+    conn.send('add_bot', { seat })
+  }
+  function removeBot(seat: Seat) {
+    conn.send('remove_bot', { seat })
+  }
+  function fillWithBots() {
+    room.value?.seats.forEach((s) => s.kind === 'empty' && addBot(s.seat))
+  }
+  function updateSettings(settings: Settings) {
+    conn.send('update_settings', settings)
+  }
+  function startGame() {
+    conn.send('start_game')
   }
 
   function discard(tileId: number) {
@@ -162,9 +262,11 @@ export const useGameStore = defineStore('game', () => {
   }
 
   return {
-    room, view, log, error, dice, deadline, timeLimit,
-    mySeat, isHost, legal, result, discardable,
+    room, view, log, error, dice, deadline, timeLimit, lobbyError,
+    mySeat, isHost, isSolo, legal, result, discardable,
     seatName, resultText,
-    startSolo, leave, discard, act, nextRound,
+    startSolo, createRoom, joinRoom, leave,
+    addBot, removeBot, fillWithBots, updateSettings, startGame,
+    discard, act, nextRound,
   }
 })

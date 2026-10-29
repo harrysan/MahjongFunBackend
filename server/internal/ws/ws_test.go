@@ -76,7 +76,8 @@ func TestSoloOverWebSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	send("start_game", nil)
-	send("join_room", map[string]string{"room": "solo", "name": "Ani"})
+	send("join_room", map[string]any{"room": "nope", "name": "Ani"}) // does not exist: error
+	send("join_room", map[string]any{"room": "solo", "name": "Ani", "create": true})
 	for s := 1; s < engine.NumSeats; s++ {
 		send("add_bot", map[string]int{"seat": s})
 	}
@@ -138,8 +139,8 @@ func TestSoloOverWebSocket(t *testing.T) {
 				if e.Result == nil {
 					t.Fatal("game_end without result")
 				}
-				if errorsSeen < 2 {
-					t.Errorf("expected errors for garbage and early start_game, saw %d", errorsSeen)
+				if errorsSeen < 3 {
+					t.Errorf("expected errors for garbage, early start_game and unknown room, saw %d", errorsSeen)
 				}
 				return
 			}
