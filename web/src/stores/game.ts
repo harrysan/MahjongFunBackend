@@ -13,6 +13,11 @@ const MELD_VERBS: Record<string, string> = {
 const MAX_LOG = 40
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no 0/O, 1/I
 const SOLO_PREFIX = 'SOLO-'
+// The server keeps a room with nobody connected for 5 minutes (IdleRoomTimeout).
+const RECONNECT_GIVE_UP_MS = 5 * 60 * 1000
+const RECONNECT_MAX_DELAY_MS = 10_000
+// Per tab, so two tabs can be two different players; it survives a refresh.
+const SESSION_KEY = 'mahjong.session'
 
 function randomCode(n: number): string {
   let s = ''
@@ -28,14 +33,34 @@ function setURLRoom(code: string | null) {
   history.replaceState(null, '', url)
 }
 
-/** A join_room request that the server has not confirmed yet. */
-interface PendingJoin {
-  name: string
-  code: string
-  create: boolean
-  solo: boolean
-  settings?: Settings
+/** What lets this tab get its seat back after a refresh or a dropped connection. */
+interface Session {
+  room: string
+  token: string
 }
+
+function loadSession(): Session | null {
+  try {
+    const s = JSON.parse(sessionStorage.getItem(SESSION_KEY) ?? 'null')
+    return s && typeof s.room === 'string' && typeof s.token === 'string' ? s : null
+  } catch {
+    return null
+  }
+}
+
+function saveSession(s: Session | null) {
+  try {
+    if (s) sessionStorage.setItem(SESSION_KEY, JSON.stringify(s))
+    else sessionStorage.removeItem(SESSION_KEY)
+  } catch {
+    // storage unavailable: a refresh will just not reconnect
+  }
+}
+
+/** A request to enter a room that the server has not confirmed yet. */
+type PendingJoin =
+  | { kind: 'create' | 'join'; name: string; code: string; solo: boolean; settings?: Settings }
+  | { kind: 'rejoin'; code: string; token: string }
 
 /**
  * Everything the table shows. It is filled only from server messages;
@@ -54,9 +79,16 @@ export const useGameStore = defineStore('game', () => {
   const timeLimit = ref(0)
   // Why the last attempt to enter a room failed; shown in the lobby.
   const lobbyError = ref<string | null>(null)
+  // The connection dropped and we are trying to get our seat back.
+  const reconnecting = ref(false)
+  // The same player opened this game in another tab or device.
+  const replaced = ref(false)
   let pending: PendingJoin | null = null
   let errorTimer: number | undefined
   let diceTimer: number | undefined
+  let retryTimer: number | undefined
+  let retryCount = 0
+  let giveUpAt = 0
 
   const mySeat = computed(() => room.value?.your_seat ?? 0)
   const isHost = computed(() => room.value !== null && room.value.host === room.value.your_seat)
@@ -118,8 +150,9 @@ export const useGameStore = defineStore('game', () => {
   function onMessage(m: ServerMessage) {
     switch (m.type) {
       case 'room_state':
-        if (!room.value) onJoined(m.data)
+        if (pending) onJoined(m.data)
         room.value = m.data
+        if (m.data.token) saveSession({ room: m.data.room, token: m.data.token })
         break
       case 'game_state':
         if (view.value?.phase === 'Ended' && m.data.phase !== 'Ended') {
@@ -137,7 +170,8 @@ export const useGameStore = defineStore('game', () => {
         onEvent(m.data)
         break
       case 'error':
-        if (!room.value && pending) onJoinFailed(m.data.code, m.data.message)
+        if (pending) onJoinFailed(m.data.code, m.data.message)
+        else if (m.data.code === 'session_moved') replaced.value = true
         else showError(m.data.message)
         break
       case 'claim_window':
@@ -148,14 +182,17 @@ export const useGameStore = defineStore('game', () => {
 
   function sendJoin(p: PendingJoin) {
     pending = p
-    conn.send('join_room', { room: p.code, name: p.name, create: p.create })
+    if (p.kind === 'rejoin') conn.send('rejoin_room', { room: p.code, token: p.token })
+    else conn.send('join_room', { room: p.code, name: p.name, create: p.kind === 'create' })
   }
 
   function onJoined(st: RoomState) {
-    const p = pending
+    const p = pending!
     pending = null
-    if (!p?.solo) setURLRoom(st.room)
-    if (!p?.create) return
+    if (reconnecting.value) addLog('— Tersambung kembali —')
+    stopReconnect()
+    if (!st.room.startsWith(SOLO_PREFIX)) setURLRoom(st.room)
+    if (p.kind !== 'create') return
     if (p.settings) conn.send('update_settings', p.settings)
     if (p.solo) {
       for (let s = 1; s < 4; s++) conn.send('add_bot', { seat: s })
@@ -164,27 +201,78 @@ export const useGameStore = defineStore('game', () => {
   }
 
   function onJoinFailed(code: string, message: string) {
-    if (code === 'room_exists' && pending?.create) {
+    const p = pending!
+    if (code === 'room_exists' && p.kind === 'create') {
       // Random code collided with an open room; try another one.
-      sendJoin({ ...pending, code: (pending.solo ? SOLO_PREFIX : '') + randomCode(pending.solo ? 8 : 5) })
+      sendJoin({ ...p, code: (p.solo ? SOLO_PREFIX : '') + randomCode(p.solo ? 8 : 5) })
       return
     }
+    if (p.kind === 'rejoin') {
+      // The room closed or our seat is gone: the old game is over.
+      message = 'Permainan sebelumnya sudah berakhir.'
+    }
     pending = null
-    conn.disconnect()
-    lobbyError.value = message
+    goToLobby(message)
   }
 
-  // The server could not be reached, or dropped us before we got in.
+  // Connection lost. In a room: keep trying to get the seat back.
+  // Before getting in: the server could not be reached.
   watch(
     () => conn.status,
     (st) => {
-      if (st === 'closed' && !room.value) {
+      if (st !== 'closed') return
+      if (room.value && !replaced.value) scheduleReconnect()
+      else if (!room.value && pending) {
         pending = null
-        conn.disconnect()
-        lobbyError.value = 'Tidak bisa terhubung ke server.'
+        goToLobby('Tidak bisa terhubung ke server.')
       }
     },
   )
+
+  function scheduleReconnect() {
+    if (!reconnecting.value) {
+      reconnecting.value = true
+      retryCount = 0
+      giveUpAt = Date.now() + RECONNECT_GIVE_UP_MS
+    }
+    if (Date.now() > giveUpAt) {
+      goToLobby('Gagal menyambung kembali ke permainan.')
+      return
+    }
+    const delay = Math.min(1000 * 2 ** retryCount, RECONNECT_MAX_DELAY_MS)
+    retryCount++
+    clearTimeout(retryTimer)
+    retryTimer = window.setTimeout(reconnectNow, delay)
+  }
+
+  function reconnectNow() {
+    const s = loadSession()
+    if (!s) {
+      goToLobby('Gagal menyambung kembali ke permainan.')
+      return
+    }
+    clearTimeout(retryTimer)
+    replaced.value = false
+    reconnecting.value = true
+    conn.connect(onMessage)
+    sendJoin({ kind: 'rejoin', code: s.room, token: s.token })
+  }
+
+  function stopReconnect() {
+    clearTimeout(retryTimer)
+    reconnecting.value = false
+    retryCount = 0
+  }
+
+  /** On page load: if this tab was in a game (e.g. after a refresh), go back to it. */
+  function resumeSession(): boolean {
+    const s = loadSession()
+    if (!s) return false
+    lobbyError.value = null
+    conn.connect(onMessage)
+    sendJoin({ kind: 'rejoin', code: s.room, token: s.token })
+    return true
+  }
 
   function enter(p: PendingJoin) {
     reset()
@@ -195,23 +283,33 @@ export const useGameStore = defineStore('game', () => {
 
   /** Solo mode: a private room with three bots, started right away (SPEC 1). */
   function startSolo(name: string, settings: Settings) {
-    enter({ name, code: SOLO_PREFIX + randomCode(8), create: true, solo: true, settings })
+    enter({ kind: 'create', name, code: SOLO_PREFIX + randomCode(8), solo: true, settings })
   }
 
   /** Make a new room for friends; the caller becomes host. */
   function createRoom(name: string, settings: Settings) {
-    enter({ name, code: randomCode(5), create: true, solo: false, settings })
+    enter({ kind: 'create', name, code: randomCode(5), solo: false, settings })
   }
 
   function joinRoom(name: string, code: string) {
-    enter({ name, code: code.trim().toUpperCase(), create: false, solo: false })
+    enter({ kind: 'join', name, code: code.trim().toUpperCase(), solo: false })
   }
 
+  /** The player chose to leave: give the seat up for good. */
   function leave() {
+    if (room.value && conn.status === 'open') conn.send('leave_room')
+    goToLobby(null)
+  }
+
+  /** Drop everything local and show the lobby (the seat is not given up). */
+  function goToLobby(message: string | null) {
     pending = null
+    stopReconnect()
     conn.disconnect()
     reset()
+    saveSession(null)
     setURLRoom(null)
+    lobbyError.value = message
   }
 
   function reset() {
@@ -221,6 +319,7 @@ export const useGameStore = defineStore('game', () => {
     dice.value = null
     error.value = null
     deadline.value = null
+    replaced.value = false
   }
 
   // Waiting room, host only (the server checks).
@@ -262,10 +361,10 @@ export const useGameStore = defineStore('game', () => {
   }
 
   return {
-    room, view, log, error, dice, deadline, timeLimit, lobbyError,
+    room, view, log, error, dice, deadline, timeLimit, lobbyError, reconnecting, replaced,
     mySeat, isHost, isSolo, legal, result, discardable,
     seatName, resultText,
-    startSolo, createRoom, joinRoom, leave,
+    startSolo, createRoom, joinRoom, leave, goToLobby, resumeSession, reconnectNow,
     addBot, removeBot, fillWithBots, updateSettings, startGame,
     discard, act, nextRound,
   }

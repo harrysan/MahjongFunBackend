@@ -10,6 +10,13 @@ const (
 	ClaimTimeout = 10 * time.Second
 	BotMinDelay  = 500 * time.Millisecond
 	BotMaxDelay  = 1500 * time.Millisecond
+
+	// ReconnectGrace is how long a waiting-room seat is kept for a player
+	// whose connection dropped. During a round the seat is kept for good
+	// (a bot plays it) until the player rejoins or leaves.
+	ReconnectGrace = 60 * time.Second
+	// IdleRoomTimeout closes a room nobody has been connected to for this long.
+	IdleRoomTimeout = 5 * time.Minute
 )
 
 // Limits for what the host may choose.

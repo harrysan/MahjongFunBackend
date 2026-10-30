@@ -8,6 +8,7 @@ defineProps<{
   isDealer: boolean
   active: boolean // the game is waiting on this seat
   isBot: boolean
+  away: boolean // the player's connection dropped; a bot plays for now
   melds: Meld[]
   bonus: T[]
   handCount?: number // set for other players: their hand is shown face down
@@ -20,6 +21,7 @@ defineProps<{
       <span class="wind" :class="{ dealer: isDealer }">{{ wind }}</span>
       <span class="name">{{ name }}</span>
       <span v-if="isBot" class="tag">bot</span>
+      <span v-if="away" class="tag away" title="Koneksi pemain terputus; bot bermain untuknya sementara">terputus</span>
     </div>
     <div v-if="handCount !== undefined" class="row hidden-hand">
       <Tile v-for="i in handCount" :key="i" back size="xs" />
@@ -66,6 +68,7 @@ defineProps<{
   font-size: 13px;
 }
 .wind.dealer { background: #c62828; }
+.tag.away { background: #b3261e; }
 .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(255, 255, 255, 0.15); font-weight: 400; }
 .row { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .hidden-hand { gap: 1px; }

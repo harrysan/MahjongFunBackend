@@ -33,6 +33,7 @@ function seatProps(s: number) {
     isDealer: s === v.dealer,
     active: v.phase !== 'Ended' && (v.pending ?? []).includes(s),
     isBot: room.value?.seats[s]?.kind === 'bot',
+    away: room.value?.seats[s]?.kind === 'human' && !room.value.seats[s].connected,
     melds: v.melds[s] ?? [],
     bonus: v.bonus[s] ?? [],
   }
@@ -65,6 +66,15 @@ const clock = computed(() => {
   const left = Math.max(0, deadline.value - now.value)
   return { seconds: Math.ceil(left / 1000), fraction: left / timeLimit.value, mine: legal.value.length > 0 }
 })
+
+// Tell players in another tab that the game is waiting for them.
+const BASE_TITLE = document.title
+watch(
+  () => legal.value.length > 0 && view.value?.phase !== 'Ended',
+  (needsMe) => (document.title = needsMe ? '(!) Giliranmu – ' + BASE_TITLE : BASE_TITLE),
+  { immediate: true },
+)
+onUnmounted(() => (document.title = BASE_TITLE))
 
 const logBox = ref<HTMLElement | null>(null)
 watch(

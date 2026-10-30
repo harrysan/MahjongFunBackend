@@ -2,6 +2,7 @@ package room
 
 import (
 	"math/rand"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -9,10 +10,14 @@ import (
 	"mahjong/server/internal/engine"
 )
 
-type fakeClient struct{ ch chan Message }
+type fakeClient struct {
+	ch     chan Message
+	closed atomic.Bool
+}
 
 func newFakeClient() *fakeClient       { return &fakeClient{ch: make(chan Message, 10000)} }
 func (f *fakeClient) Send(m Message)   { f.ch <- m }
+func (f *fakeClient) Close()           { f.closed.Store(true) }
 func noDelay(*rand.Rand) time.Duration { return 0 }
 
 func testManager() *Manager { return NewManager(Options{BotDelay: noDelay, Seed: 42}) }
@@ -477,4 +482,154 @@ func TestMultiplayerRounds(t *testing.T) {
 			}
 		}
 	}
+}
+
+// roomStateWith waits until c gets a room_state that satisfies ok.
+func (f *fakeClient) roomStateWith(t *testing.T, ok func(RoomState) bool) RoomState {
+	t.Helper()
+	for {
+		if st := f.next(t, MsgRoomState).Data.(RoomState); ok(st) {
+			return st
+		}
+	}
+}
+
+// inspect runs f on the room goroutine and waits for it.
+func inspect[T any](r *Room, f func() T) T {
+	ch := make(chan T, 1)
+	r.post(func() { ch <- f() })
+	return <-ch
+}
+
+func TestReconnectDuringGame(t *testing.T) {
+	m := testManager()
+	a, b := newFakeClient(), newFakeClient()
+	r, sa, _ := m.Join("meja", "Ani", true, a)
+	_, sb, _ := m.Join("meja", "Budi", false, b)
+	token := b.next(t, MsgRoomState).Data.(RoomState).Token
+	if len(token) != 32 {
+		t.Fatalf("token %q", token)
+	}
+	r.AddBot(sa, 2)
+	r.AddBot(sa, 3)
+	r.Start(sa)
+
+	r.Disconnect(sb, b)
+	st := a.roomStateWith(t, func(st RoomState) bool { return st.Status == "playing" && !st.Seats[sb].Connected })
+	if st.Seats[sb].Kind != "human" {
+		t.Fatalf("away seat as others see it: %+v", st.Seats[sb])
+	}
+	if st.Token == token || st.Token == "" {
+		t.Fatal("each player must get only their own token")
+	}
+
+	if _, _, err := m.Rejoin("meja", "salah", newFakeClient()); err != ErrBadToken {
+		t.Errorf("wrong token: %v", err)
+	}
+	if _, _, err := m.Rejoin("tidakada", token, newFakeClient()); err != ErrRoomNotFound {
+		t.Errorf("unknown room: %v", err)
+	}
+	// Joining by name is not possible once the game runs; only rejoin is.
+	if _, _, err := m.Join("meja", "Budi", false, newFakeClient()); err != ErrGameStarted {
+		t.Errorf("join a running game: %v", err)
+	}
+
+	b2 := newFakeClient()
+	r2, s, err := m.Rejoin("MEJA", token, b2)
+	if err != nil || r2 != r || s != sb {
+		t.Fatalf("rejoin: seat %d err %v", s, err)
+	}
+	if st := b2.next(t, MsgRoomState).Data.(RoomState); !st.Seats[sb].Connected || st.YourSeat != sb || st.Token != token {
+		t.Errorf("room state after rejoin: %+v", st)
+	}
+	if v := b2.next(t, MsgGameState).Data.(GameState); v.Seat != sb || len(v.Hand) == 0 {
+		t.Errorf("game state after rejoin: seat %d, %d tiles", v.Seat, len(v.Hand))
+	}
+	// The old connection dropping late must not mark the player away again.
+	r.Disconnect(sb, b)
+	if inspect(r, func() bool { return r.seats[sb].connected() }) != true {
+		t.Error("stale disconnect kicked the rejoined player")
+	}
+}
+
+func TestRejoinReplacesOldConnection(t *testing.T) {
+	m := testManager()
+	old := newFakeClient()
+	r, s, _ := m.Join("meja", "Ani", true, old)
+	token := old.next(t, MsgRoomState).Data.(RoomState).Token
+
+	fresh := newFakeClient()
+	if _, got, err := m.Rejoin("meja", token, fresh); err != nil || got != s {
+		t.Fatalf("rejoin while connected: seat %d err %v", got, err)
+	}
+	if e := old.next(t, MsgError).Data.(*Error); e != ErrSessionMoved {
+		t.Errorf("old connection told %v", e)
+	}
+	if !old.closed.Load() {
+		t.Error("old connection not closed")
+	}
+	r.Disconnect(s, old)
+	if !inspect(r, func() bool { return r.seats[s].client == Client(fresh) }) {
+		t.Error("the new connection lost its seat")
+	}
+}
+
+// TestFreezeWhileEveryoneAway: with nobody connected the round must not play
+// itself out; it continues when someone comes back.
+func TestFreezeWhileEveryoneAway(t *testing.T) {
+	m := NewManager(Options{BotDelay: func(*rand.Rand) time.Duration { return time.Millisecond }, Seed: 9, TimeUnit: time.Millisecond})
+	c := newFakeClient()
+	r, me, _ := m.Join("solo", "Ani", true, c)
+	token := c.next(t, MsgRoomState).Data.(RoomState).Token
+	r.UpdateSettings(me, Settings{TurnSeconds: 5, ClaimSeconds: 3}) // 5ms / 3ms turns
+	for s := engine.Seat(1); s < engine.NumSeats; s++ {
+		r.AddBot(me, s)
+	}
+	r.Start(me)
+	c.next(t, MsgGameState)
+
+	r.Disconnect(me, c)
+	before := inspect(r, func() int { return r.game.WallLeft() })
+	time.Sleep(100 * time.Millisecond) // many turns' worth of time
+	if after := inspect(r, func() int { return r.game.WallLeft() }); after != before {
+		t.Fatalf("game moved while nobody was connected: wall %d -> %d", before, after)
+	}
+
+	c2 := newFakeClient()
+	if _, _, err := m.Rejoin("solo", token, c2); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		return inspect(r, func() int { return r.game.WallLeft() }) < before || inspect(r, r.game.Ended)
+	})
+}
+
+func TestIdleRoomCloses(t *testing.T) {
+	m := NewManager(Options{BotDelay: noDelay, Seed: 1, TimeUnit: 100 * time.Microsecond}) // 5 min -> 30ms
+	c := newFakeClient()
+	r, me, _ := m.Join("meja", "Ani", true, c)
+	r.AddBot(me, 1)
+	r.AddBot(me, 2)
+	r.AddBot(me, 3)
+	r.Start(me)
+	r.Disconnect(me, c)
+	if m.Count() != 1 {
+		t.Fatal("room closed at once; it should wait for the player")
+	}
+	waitFor(t, func() bool { return m.Count() == 0 })
+}
+
+func TestWaitingRoomGrace(t *testing.T) {
+	m := NewManager(Options{BotDelay: noDelay, Seed: 1, TimeUnit: time.Millisecond}) // 60s -> 60ms
+	a, b := newFakeClient(), newFakeClient()
+	r, sa, _ := m.Join("meja", "Ani", true, a)
+	_, sb, _ := m.Join("meja", "Budi", false, b)
+
+	// The host's connection drops: Budi becomes host, Ani's seat is kept for a while.
+	r.Disconnect(sa, a)
+	st := b.roomStateWith(t, func(st RoomState) bool { return st.Host == sb })
+	if st.Seats[sa].Kind != "human" || st.Seats[sa].Connected {
+		t.Errorf("away host's seat right after the drop: %+v", st.Seats[sa])
+	}
+	b.roomStateWith(t, func(st RoomState) bool { return st.Seats[sa].Kind == "empty" })
 }

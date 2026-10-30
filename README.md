@@ -10,7 +10,7 @@ Game mahjong berbasis web (4 pemain, manusia atau bot). Aturan lengkap ada di [S
 - [x] M3: bot v1 (`server/internal/bot`, simulasi: `go run ./cmd/sim`)
 - [x] M4: WebSocket + UI meja, solo vs 3 bot bisa dimainkan; tile memakai gambar di `web/src/assets/tiles`; pengaturan waktu bot berpikir, timer giliran dan klaim
 - [x] M5: lobby (solo, buat room, gabung via kode/tautan), ruang tunggu, multiplayer manusia
-- [ ] M6: reconnect, polish, deploy
+- [x] M6: reconnect (refresh/koneksi putus kembali ke kursi yang sama), bot pengganti, timer, heartbeat, Docker
 
 ## Menjalankan test engine
 
@@ -41,6 +41,20 @@ npm run dev            # buka http://localhost:5173
 
 Atau tanpa Vite: `cd web && npm run build`, lalu `cd server && go run ./cmd/server -web ../web/dist`
 dan buka http://localhost:8080.
+
+## Deploy (Docker)
+
+```bash
+docker build -t mahjong-fun .
+docker run -p 8080:8080 mahjong-fun      # buka http://localhost:8080
+```
+
+- Image berisi server Go + hasil build frontend (sekitar 9 MB, tanpa shell).
+- Server memakai env `PORT` jika ada (Render, Fly.io, Railway, Cloud Run, dan lain-lain), selain itu 8080.
+- Health check: `GET /healthz`.
+- State game ada di memori: restart/deploy ulang mengakhiri semua room. Jalankan **satu** instance saja.
+- Jika di belakang reverse proxy (Nginx, Caddy), pastikan WebSocket di `/ws` diteruskan
+  (`Upgrade`/`Connection` header). Pakai HTTPS di production; klien otomatis memakai `wss://`.
 
 ### Main bersama di satu jaringan (Wi-Fi/LAN)
 

@@ -147,3 +147,89 @@ func TestSoloOverWebSocket(t *testing.T) {
 		}
 	}
 }
+
+// TestRejoinOverWebSocket: a player whose connection drops gets their seat
+// back on a new connection with the token from room_state.
+func TestRejoinOverWebSocket(t *testing.T) {
+	rooms := room.NewManager(room.Options{BotDelay: func(*rand.Rand) time.Duration { return time.Hour }, Seed: 3})
+	srv := httptest.NewServer(&Handler{Rooms: rooms})
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	dial := func() *websocket.Conn {
+		c, _, err := websocket.Dial(ctx, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	send := func(c *websocket.Conn, typ string, data any) {
+		if err := wsjson.Write(ctx, c, map[string]any{"type": typ, "data": data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// next reads until a message of type typ arrives.
+	next := func(c *websocket.Conn, typ string) json.RawMessage {
+		for {
+			var m msg
+			if err := wsjson.Read(ctx, c, &m); err != nil {
+				t.Fatal(err)
+			}
+			if m.Type == typ {
+				return m.Data
+			}
+		}
+	}
+	type roomState struct {
+		Room     string `json:"room"`
+		Status   string `json:"status"`
+		YourSeat int    `json:"your_seat"`
+		Token    string `json:"token"`
+		Seats    []struct {
+			Kind      string `json:"kind"`
+			Connected bool   `json:"connected"`
+		} `json:"seats"`
+	}
+
+	c1 := dial()
+	send(c1, "join_room", map[string]any{"room": "kumpul", "name": "Ani", "create": true})
+	var st roomState
+	json.Unmarshal(next(c1, "room_state"), &st)
+	for s := 1; s < engine.NumSeats; s++ {
+		send(c1, "add_bot", map[string]int{"seat": s})
+	}
+	send(c1, "start_game", nil)
+	next(c1, "game_state")
+	c1.Close(websocket.StatusGoingAway, "refresh")
+
+	c2 := dial()
+	defer c2.CloseNow()
+	send(c2, "rejoin_room", map[string]string{"room": st.Room, "token": "salah"})
+	var e room.Error
+	json.Unmarshal(next(c2, "error"), &e)
+	if e.Code != "bad_token" {
+		t.Errorf("rejoin with a wrong token: %+v", e)
+	}
+	send(c2, "rejoin_room", map[string]string{"room": st.Room, "token": st.Token})
+	var st2 roomState
+	for st2.Status != "playing" || !st2.Seats[0].Connected {
+		json.Unmarshal(next(c2, "room_state"), &st2)
+	}
+	if st2.YourSeat != st.YourSeat {
+		t.Errorf("rejoined at seat %d, want %d", st2.YourSeat, st.YourSeat)
+	}
+	next(c2, "game_state")
+
+	// leave_room gives the seat up for good: the token stops working.
+	send(c2, "leave_room", nil)
+	c3 := dial()
+	defer c3.CloseNow()
+	time.Sleep(50 * time.Millisecond)
+	send(c3, "rejoin_room", map[string]string{"room": st.Room, "token": st.Token})
+	json.Unmarshal(next(c3, "error"), &e)
+	if e.Code != "room_not_found" && e.Code != "bad_token" {
+		t.Errorf("rejoin after leaving: %+v", e)
+	}
+}

@@ -111,7 +111,9 @@ Bonus tile tidak dihitung.
 
 - Giliran buang: 30 detik. Jika habis, server membuang tile yang baru diambil secara otomatis.
 - Jendela klaim: 10 detik. Jika habis, dianggap pass.
-- Pemain yang terputus: bot mengambil alih kursinya sampai ia kembali.
+- Pemain yang terputus: bot mengambil alih kursinya sampai ia kembali (`rejoin_room`).
+  Di ruang tunggu kursinya disimpan 60 detik. Jika tidak ada pemain manusia yang tersambung,
+  permainan dibekukan (timer dan bot berhenti) dan room ditutup setelah 5 menit.
 
 Nilai timer disimpan sebagai konstanta di satu tempat agar mudah diubah.
 Nilai di atas adalah default; host boleh mengubahnya per room lewat `update_settings`
@@ -175,6 +177,8 @@ Semua pesan: `{"type": "...", "data": {...}}`.
 | `join_room` | `{room, name, create?}` | `create: true` membuat room baru (gagal jika kode sudah dipakai); tanpa `create` hanya masuk ke room yang sudah ada. Kode room tidak peka huruf besar/kecil |
 | `add_bot` | `{seat}` | Hanya host, sebelum mulai. Isi kursi kosong dengan bot |
 | `remove_bot` | `{seat}` | Hanya host, sebelum mulai. Kosongkan kursi bot |
+| `rejoin_room` | `{room, token}` | Kembali ke kursi sendiri setelah koneksi putus/refresh. `token` didapat dari `room_state` |
+| `leave_room` | `{}` | Keluar permanen. Saat ronde berjalan kursi diambil alih bot dan token tidak berlaku lagi |
 | `update_settings` | `{bot_delay_min_ms, bot_delay_max_ms, turn_seconds, claim_seconds}` | Hanya host, tidak saat ronde berjalan. Timeout 0 = tanpa batas |
 | `start_game` | `{}` | Hanya host |
 | `discard` | `{tile_id}` | Buang tile |
@@ -186,7 +190,7 @@ Semua pesan: `{"type": "...", "data": {...}}`.
 
 | type | Keterangan |
 |---|---|
-| `room_state` | Daftar kursi, siapa host, status, pengaturan room |
+| `room_state` | Daftar kursi (termasuk `connected`), siapa host, status, pengaturan room, dan `token` milik penerima |
 | `game_state` | Snapshot lengkap untuk pemain ini (`PlayerView`) + `time_left_ms`, `time_limit_ms` |
 | `event` | Kejadian: `drew`, `discarded`, `claimed`, `bonus`, `turn`, `game_end`, `dice_rolled` (`{dice: [a,b], new_dealer}`) |
 | `claim_window` | Aksi yang boleh dilakukan pemain + sisa waktu |

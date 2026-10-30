@@ -9,9 +9,11 @@ type Message struct {
 }
 
 // Client is a connected human. Send must not block; the room calls it from
-// its own goroutine.
+// its own goroutine. Close drops the connection (used when the same player
+// connects again from somewhere else).
 type Client interface {
 	Send(Message)
+	Close()
 }
 
 const (
@@ -29,6 +31,8 @@ type SeatInfo struct {
 	Seat engine.Seat `json:"seat"`
 	Kind string      `json:"kind"` // "empty", "human" or "bot"
 	Name string      `json:"name"`
+	// Connected is false for a human whose connection dropped; a bot plays for them.
+	Connected bool `json:"connected"`
 }
 
 type RoomState struct {
@@ -39,6 +43,8 @@ type RoomState struct {
 	Dealer   engine.Seat               `json:"dealer"`
 	Seats    [engine.NumSeats]SeatInfo `json:"seats"`
 	Settings Settings                  `json:"settings"`
+	// Token lets this player reconnect to their seat (rejoin_room). Keep it secret.
+	Token string `json:"token,omitempty"`
 }
 
 // GameState is a player's view plus the clock of the current step.
@@ -95,6 +101,8 @@ var (
 	ErrRoomNotFound = &Error{"room_not_found", "Room tidak ditemukan. Periksa kodenya."}
 	ErrRoomExists   = &Error{"room_exists", "Kode room sudah dipakai."}
 	ErrNotBot       = &Error{"not_bot", "Kursi itu tidak berisi bot."}
+	ErrBadToken     = &Error{"bad_token", "Sesi sudah tidak berlaku."}
+	ErrSessionMoved = &Error{"session_moved", "Permainan ini dibuka di tab atau perangkat lain."}
 )
 
 // engineError converts an engine error into a player-facing Error.

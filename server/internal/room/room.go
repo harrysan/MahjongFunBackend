@@ -6,9 +6,11 @@
 package room
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
-	"math/rand"
+	mrand "math/rand"
 	"time"
 
 	"mahjong/server/internal/bot"
@@ -28,19 +30,25 @@ var seatKindNames = [...]string{seatEmpty: "empty", seatHuman: "human", seatBot:
 type seat struct {
 	kind   seatKind
 	name   string
-	client Client   // human seats only
-	bot    *bot.Bot // bot seats only
+	token  string   // human seats: secret that lets the player reconnect
+	client Client   // human seats: nil while the player is disconnected
+	bot    *bot.Bot // plays bot seats, and human seats while their player is away
 }
+
+func (s *seat) connected() bool { return s.kind == seatHuman && s.client != nil }
+
+// botPlays reports whether the computer makes this seat's moves.
+func (s *seat) botPlays() bool { return s.kind == seatBot || (s.kind == seatHuman && s.client == nil) }
 
 // Options tune a room; the zero value means the defaults from config.go.
 type Options struct {
 	// BotDelay returns how long a bot waits before acting, overriding the
 	// room settings (used by tests). nil = random within the settings.
-	BotDelay func(rng *rand.Rand) time.Duration
+	BotDelay func(rng *mrand.Rand) time.Duration
 	// Seed seeds the room's dice, shuffles and bots. 0 = time based.
 	Seed int64
-	// TimeUnit is the length of one "second" of the turn and claim clocks.
-	// 0 = time.Second; tests shrink it.
+	// TimeUnit is the length of one "second" for every room clock (turns,
+	// claims, reconnect grace, idle close). 0 = time.Second; tests shrink it.
 	TimeUnit time.Duration
 }
 
@@ -56,7 +64,7 @@ type Room struct {
 	host      engine.Seat
 	dealer    engine.Seat
 	game      *engine.Game
-	rng       *rand.Rand
+	rng       *mrand.Rand
 	settings  Settings
 	epoch     int                   // bumped whenever the game moves on; stale timers check it
 	botQueued [engine.NumSeats]bool // a bot move is already scheduled for this epoch
@@ -64,6 +72,7 @@ type Room struct {
 	timerEpoch int
 	deadline   time.Time // zero when the current step has no time limit
 	timeLimit  time.Duration
+	connGen    int // bumped whenever a player connects or disconnects; stale idle timers check it
 	closed     bool
 }
 
@@ -79,7 +88,7 @@ func newRoom(name string, mgr *Manager, opts Options) *Room {
 		inbox:    make(chan func(), 64),
 		done:     make(chan struct{}),
 		host:     -1,
-		rng:      rand.New(rand.NewSource(seed)),
+		rng:      mrand.New(mrand.NewSource(seed)),
 		settings: DefaultSettings(),
 	}
 	go r.loop()
@@ -119,13 +128,23 @@ func (r *Room) post(f func()) bool {
 
 // join seats a human and returns the seat. It waits for the room goroutine.
 func (r *Room) join(name string, c Client) (engine.Seat, error) {
+	return r.call(func() (engine.Seat, error) { return r.doJoin(name, c) })
+}
+
+// rejoin gives a disconnected player their seat back. It waits for the room goroutine.
+func (r *Room) rejoin(token string, c Client) (engine.Seat, error) {
+	return r.call(func() (engine.Seat, error) { return r.doRejoin(token, c) })
+}
+
+// call runs f on the room goroutine and waits for its answer.
+func (r *Room) call(f func() (engine.Seat, error)) (engine.Seat, error) {
 	type reply struct {
 		seat engine.Seat
 		err  error
 	}
 	ch := make(chan reply, 1)
 	ok := r.post(func() {
-		s, err := r.doJoin(name, c)
+		s, err := f()
 		ch <- reply{s, err}
 	})
 	if !ok {
@@ -145,15 +164,45 @@ func (r *Room) doJoin(name string, c Client) (engine.Seat, error) {
 	}
 	for s := range r.seats {
 		if r.seats[s].kind == seatEmpty {
-			r.seats[s] = seat{kind: seatHuman, name: name, client: c}
-			if r.host < 0 {
-				r.host = engine.Seat(s)
-			}
+			r.seats[s] = seat{kind: seatHuman, name: name, token: newToken(), client: c}
+			r.connGen++
+			r.fixHost()
 			r.broadcastRoom()
 			return engine.Seat(s), nil
 		}
 	}
 	return -1, ErrRoomFull
+}
+
+func (r *Room) doRejoin(token string, c Client) (engine.Seat, error) {
+	s := engine.Seat(-1)
+	for i := range r.seats {
+		if token != "" && r.seats[i].kind == seatHuman && r.seats[i].token == token {
+			s = engine.Seat(i)
+		}
+	}
+	if s < 0 {
+		return -1, ErrBadToken
+	}
+	if old := r.seats[s].client; old != nil {
+		// The same player opened the game somewhere else; the newest connection wins.
+		old.Send(Message{Type: MsgError, Data: ErrSessionMoved})
+		old.Close()
+	}
+	wasFrozen := r.connectedHumans() == 0
+	r.seats[s].client = c
+	r.connGen++
+	r.fixHost()
+	if wasFrozen && r.game != nil && !r.game.Ended() {
+		r.resume()
+	}
+	r.broadcastRoom()
+	if r.game != nil {
+		r.sendStateTo(s)
+		r.sendClaimWindowTo(s)
+	}
+	r.scheduleBots()
+	return s, nil
 }
 
 // AddBot fills an empty seat with a bot. Host only, before the game starts.
@@ -272,8 +321,9 @@ func (r *Room) Act(by engine.Seat, a engine.Action) {
 	})
 }
 
-// Leave removes a human. Before the game the seat is freed; during the game a
-// bot takes the seat over. The room closes when no human is left.
+// Leave removes a human for good (they pressed "leave"). Before the game the
+// seat is freed; during the game a bot takes the seat over. The room closes
+// when no human is left.
 func (r *Room) Leave(by engine.Seat) {
 	r.post(func() {
 		if !by.Valid() || r.seats[by].kind != seatHuman {
@@ -284,24 +334,132 @@ func (r *Room) Leave(by engine.Seat) {
 		} else {
 			r.seats[by] = seat{kind: seatBot, name: r.seats[by].name + " (bot)", bot: bot.New(r.rng.Int63())}
 		}
-		if r.host == by {
-			r.host = -1
-			for s := range r.seats {
-				if r.seats[s].kind == seatHuman {
-					r.host = engine.Seat(s)
-					break
-				}
-			}
+		r.connGen++
+		r.afterSeatChange()
+	})
+}
+
+// Disconnect is called when c's connection drops. The player keeps their
+// seat and may rejoin with their token; meanwhile a bot plays for them (spec
+// 4.6). In the waiting room the seat is kept for ReconnectGrace only.
+func (r *Room) Disconnect(by engine.Seat, c Client) {
+	r.post(func() {
+		if !by.Valid() || r.seats[by].kind != seatHuman || r.seats[by].client != c {
+			return // already left, or replaced by a newer connection
 		}
-		if r.host < 0 {
-			r.closed = true
-			close(r.done)
-			r.mgr.remove(r)
+		st := &r.seats[by]
+		st.client = nil
+		if st.bot == nil {
+			st.bot = bot.New(r.rng.Int63())
+		}
+		r.connGen++
+		if r.game == nil {
+			token := st.token
+			r.after(ReconnectGrace, func() { r.expireAway(by, token) })
+		}
+		r.afterSeatChange()
+	})
+}
+
+// expireAway frees a waiting-room seat whose player did not come back in time.
+func (r *Room) expireAway(s engine.Seat, token string) {
+	st := &r.seats[s]
+	if r.game != nil || st.kind != seatHuman || st.client != nil || st.token != token {
+		return
+	}
+	r.seats[s] = seat{}
+	r.afterSeatChange()
+}
+
+// afterSeatChange fixes the host, closes or freezes the room as needed, and
+// tells everyone.
+func (r *Room) afterSeatChange() {
+	r.fixHost()
+	if r.host < 0 {
+		r.closeRoom()
+		return
+	}
+	if r.connectedHumans() == 0 {
+		r.freeze()
+		gen := r.connGen
+		r.after(IdleRoomTimeout, func() {
+			if gen == r.connGen && r.connectedHumans() == 0 {
+				r.closeRoom()
+			}
+		})
+		return
+	}
+	r.broadcastRoom()
+	r.scheduleBots()
+}
+
+// fixHost keeps the host on a connected human when there is one. A host who
+// is only away keeps the role while nobody else is connected.
+func (r *Room) fixHost() {
+	if r.host >= 0 && r.seats[r.host].connected() {
+		return
+	}
+	for s := range r.seats {
+		if r.seats[s].connected() {
+			r.host = engine.Seat(s)
 			return
 		}
-		r.broadcastRoom()
-		r.scheduleBots()
-	})
+	}
+	if r.host >= 0 && r.seats[r.host].kind == seatHuman {
+		return
+	}
+	r.host = -1
+	for s := range r.seats {
+		if r.seats[s].kind == seatHuman {
+			r.host = engine.Seat(s)
+			return
+		}
+	}
+}
+
+func (r *Room) connectedHumans() int {
+	n := 0
+	for s := range r.seats {
+		if r.seats[s].connected() {
+			n++
+		}
+	}
+	return n
+}
+
+// freeze stops the game clock and bot moves while nobody is connected, so the
+// round does not play itself out while everyone is reconnecting.
+func (r *Room) freeze() {
+	r.epoch++
+	r.botQueued = [engine.NumSeats]bool{}
+	r.timerEpoch = r.epoch
+	r.deadline, r.timeLimit = time.Time{}, 0
+}
+
+// resume restarts the clock (a fresh full turn) and the bots after a freeze.
+func (r *Room) resume() {
+	r.epoch++
+	r.botQueued = [engine.NumSeats]bool{}
+	r.armTimer()
+}
+
+func (r *Room) closeRoom() {
+	r.closed = true
+	close(r.done)
+	r.mgr.remove(r)
+}
+
+// after runs f on the room goroutine once d (in room time, see Options.TimeUnit) has passed.
+func (r *Room) after(d time.Duration, f func()) {
+	time.AfterFunc(r.scaled(d), func() { r.post(f) })
+}
+
+// scaled converts a duration in real seconds into room time.
+func (r *Room) scaled(d time.Duration) time.Duration {
+	if r.opts.TimeUnit == 0 {
+		return d
+	}
+	return d / time.Second * r.opts.TimeUnit
 }
 
 func (r *Room) startRound(dealer engine.Seat) {
@@ -360,39 +518,47 @@ func (r *Room) eventFor(e engine.Event, viewer engine.Seat) EventData {
 
 func (r *Room) sendStates() {
 	for s := range r.seats {
-		if c := r.seats[s].client; c != nil {
-			c.Send(Message{Type: MsgGameState, Data: GameState{
-				PlayerView:  r.game.ViewFor(engine.Seat(s)),
-				TimeLeftMs:  r.timeLeftMs(),
-				TimeLimitMs: int(r.timeLimit / time.Millisecond),
-			}})
-		}
+		r.sendStateTo(engine.Seat(s))
+	}
+}
+
+func (r *Room) sendStateTo(s engine.Seat) {
+	if c := r.seats[s].client; c != nil {
+		c.Send(Message{Type: MsgGameState, Data: GameState{
+			PlayerView:  r.game.ViewFor(s),
+			TimeLeftMs:  r.timeLeftMs(),
+			TimeLimitMs: int(r.timeLimit / time.Millisecond),
+		}})
 	}
 }
 
 func (r *Room) sendClaimWindows() {
 	for s := range r.seats {
-		c := r.seats[s].client
-		if c == nil {
-			continue
-		}
-		v := r.game.ViewFor(engine.Seat(s))
-		if len(v.LegalActions) == 0 || v.LastDiscard == nil {
-			continue
-		}
-		c.Send(Message{Type: MsgClaimWindow, Data: ClaimWindowData{
-			Tile: *v.LastDiscard, From: v.LastDiscarder, Actions: v.LegalActions, TimeLeftMs: r.timeLeftMs(),
-		}})
+		r.sendClaimWindowTo(engine.Seat(s))
 	}
+}
+
+func (r *Room) sendClaimWindowTo(s engine.Seat) {
+	c := r.seats[s].client
+	if c == nil || r.game.Phase() != engine.PhaseClaim {
+		return
+	}
+	v := r.game.ViewFor(s)
+	if len(v.LegalActions) == 0 || v.LastDiscard == nil {
+		return
+	}
+	c.Send(Message{Type: MsgClaimWindow, Data: ClaimWindowData{
+		Tile: *v.LastDiscard, From: v.LastDiscarder, Actions: v.LegalActions, TimeLeftMs: r.timeLeftMs(),
+	}})
 }
 
 // scheduleBots queues a delayed move for every bot the game is waiting on.
 func (r *Room) scheduleBots() {
-	if r.game == nil || r.game.Ended() {
+	if r.game == nil || r.game.Ended() || r.connectedHumans() == 0 {
 		return
 	}
 	for _, s := range r.game.Pending() {
-		if r.seats[s].kind != seatBot || r.botQueued[s] {
+		if !r.seats[s].botPlays() || r.botQueued[s] {
 			continue
 		}
 		r.botQueued[s] = true
@@ -404,7 +570,7 @@ func (r *Room) scheduleBots() {
 }
 
 func (r *Room) botMove(s engine.Seat, epoch int) {
-	if epoch != r.epoch || r.game == nil || r.game.Ended() || r.seats[s].kind != seatBot {
+	if epoch != r.epoch || r.game == nil || r.game.Ended() || !r.seats[s].botPlays() {
 		return
 	}
 	r.botQueued[s] = false
@@ -440,16 +606,12 @@ func (r *Room) armTimer() {
 	}
 	r.timerEpoch = r.epoch
 	r.deadline, r.timeLimit = time.Time{}, 0
-	if r.game == nil || r.game.Ended() {
+	if r.game == nil || r.game.Ended() || r.connectedHumans() == 0 {
 		return
 	}
-	unit := r.opts.TimeUnit
-	if unit == 0 {
-		unit = time.Second
-	}
-	limit := time.Duration(r.settings.TurnSeconds) * unit
+	limit := r.scaled(time.Duration(r.settings.TurnSeconds) * time.Second)
 	if r.game.Phase() == engine.PhaseClaim {
-		limit = time.Duration(r.settings.ClaimSeconds) * unit
+		limit = r.scaled(time.Duration(r.settings.ClaimSeconds) * time.Second)
 	}
 	if limit <= 0 {
 		return
@@ -517,11 +679,13 @@ func (r *Room) status() string {
 func (r *Room) broadcastRoom() {
 	st := RoomState{Room: r.name, Status: r.status(), Host: r.host, Dealer: r.dealer, Settings: r.settings}
 	for s := range r.seats {
-		st.Seats[s] = SeatInfo{Seat: engine.Seat(s), Kind: seatKindNames[r.seats[s].kind], Name: r.seats[s].name}
+		x := &r.seats[s]
+		st.Seats[s] = SeatInfo{Seat: engine.Seat(s), Kind: seatKindNames[x.kind], Name: x.name, Connected: x.connected()}
 	}
 	for s := range r.seats {
 		if c := r.seats[s].client; c != nil {
 			st.YourSeat = engine.Seat(s)
+			st.Token = r.seats[s].token
 			c.Send(Message{Type: MsgRoomState, Data: st})
 		}
 	}
@@ -539,6 +703,14 @@ func (r *Room) sendError(s engine.Seat, e *Error) {
 	if s.Valid() && r.seats[s].client != nil {
 		r.seats[s].client.Send(Message{Type: MsgError, Data: e})
 	}
+}
+
+func newToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic(err) // crypto/rand does not fail on supported platforms
+	}
+	return hex.EncodeToString(b)
 }
 
 func botName(s engine.Seat) string {

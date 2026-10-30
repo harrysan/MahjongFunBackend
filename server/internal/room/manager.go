@@ -58,6 +58,26 @@ func (m *Manager) Join(roomName, playerName string, create bool, c Client) (*Roo
 	}
 }
 
+// Rejoin puts a player whose connection dropped back in their seat. token is
+// the one they got in room_state.
+func (m *Manager) Rejoin(roomName, token string, c Client) (*Room, engine.Seat, error) {
+	roomName = strings.ToUpper(strings.TrimSpace(roomName))
+	m.mu.Lock()
+	r := m.rooms[roomName]
+	m.mu.Unlock()
+	if r == nil {
+		return nil, -1, ErrRoomNotFound
+	}
+	s, err := r.rejoin(token, c)
+	if err == ErrRoomClosed {
+		return nil, -1, ErrRoomNotFound
+	}
+	if err != nil {
+		return nil, -1, err
+	}
+	return r, s, nil
+}
+
 // Count is the number of open rooms.
 func (m *Manager) Count() int {
 	m.mu.Lock()

@@ -67,6 +67,7 @@ export interface SeatInfo {
   seat: Seat
   kind: 'empty' | 'human' | 'bot'
   name: string
+  connected: boolean // false: a human whose connection dropped; a bot plays for them
 }
 
 export interface RoomState {
@@ -77,6 +78,7 @@ export interface RoomState {
   dealer: Seat
   seats: SeatInfo[]
   settings: Settings
+  token?: string // lets this player reconnect (rejoin_room); keep it secret
 }
 
 export interface GameEvent {

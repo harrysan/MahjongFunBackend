@@ -21,6 +21,10 @@ const (
 	sendBuffer   = 256
 	writeTimeout = 10 * time.Second
 	maxReadBytes = 4096
+	// A ping every pingInterval finds connections that died without a close
+	// (phone asleep, Wi-Fi gone), so the player's seat is handed to a bot.
+	pingInterval = 20 * time.Second
+	pingTimeout  = 10 * time.Second
 )
 
 // Handler upgrades HTTP requests to WebSocket connections.
@@ -41,10 +45,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	cl := &client{conn: c, ctx: ctx, cancel: cancel, send: make(chan room.Message, sendBuffer), rooms: h.Rooms, seat: -1}
 	go cl.writeLoop()
+	go cl.pingLoop()
 	cl.readLoop()
 
 	if cl.room != nil {
-		cl.room.Leave(cl.seat)
+		cl.room.Disconnect(cl.seat, cl) // the player may come back with rejoin_room
 	}
 	c.Close(websocket.StatusNormalClosure, "")
 }
@@ -75,6 +80,29 @@ func (c *client) Send(m room.Message) {
 	default:
 		log.Printf("ws: send buffer full, dropping client")
 		c.cancel()
+	}
+}
+
+// Close drops the connection; the room calls it when the same player
+// connected again from somewhere else.
+func (c *client) Close() { c.cancel() }
+
+func (c *client) pingLoop() {
+	t := time.NewTicker(pingInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-t.C:
+			ctx, cancel := context.WithTimeout(c.ctx, pingTimeout)
+			err := c.conn.Ping(ctx)
+			cancel()
+			if err != nil {
+				c.cancel()
+				return
+			}
+		}
 	}
 }
 
@@ -141,6 +169,25 @@ func (c *client) handle(env envelope) *room.Error {
 		return nil
 	}
 
+	if env.Type == "rejoin_room" {
+		var d struct {
+			Room  string `json:"room"`
+			Token string `json:"token"`
+		}
+		if err := decode(env.Data, &d); err != nil {
+			return errBadRequest
+		}
+		if c.room != nil {
+			return errInRoom
+		}
+		r, s, err := c.rooms.Rejoin(d.Room, d.Token, c)
+		if err != nil {
+			return toError(err)
+		}
+		c.room, c.seat = r, s
+		return nil
+	}
+
 	if c.room == nil {
 		return errNotInRoom
 	}
@@ -167,6 +214,9 @@ func (c *client) handle(env envelope) *room.Error {
 			return errBadRequest
 		}
 		c.room.UpdateSettings(c.seat, d)
+	case "leave_room":
+		c.room.Leave(c.seat)
+		c.room, c.seat = nil, -1
 	case "start_game":
 		c.room.Start(c.seat)
 	case "next_round":

@@ -71,6 +71,7 @@ async function copy(what: 'link' | 'code') {
               <span v-if="s.seat === mySeat" class="tag me">kamu</span>
               <span v-if="s.seat === room.host" class="tag host">host</span>
               <span v-if="s.kind === 'bot'" class="tag">bot</span>
+              <span v-if="s.kind === 'human' && !s.connected" class="tag away">terputus</span>
             </template>
           </span>
           <template v-if="isHost">
@@ -163,6 +164,7 @@ h2 { font-size: 17px; }
 .tag { margin-left: 4px; padding: 1px 6px; border-radius: 4px; font-size: 11px; background: rgba(255, 255, 255, 0.15); }
 .tag.me { background: #1f8a5b; }
 .tag.host { background: #c62828; }
+.tag.away { background: #6b4d00; }
 
 .primary, .secondary, .small {
   border: none;

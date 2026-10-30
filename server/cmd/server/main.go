@@ -3,21 +3,34 @@
 //	go run ./cmd/server                       # WebSocket at ws://localhost:8080/ws
 //	go run ./cmd/server -web ../web/dist      # also serve the built frontend
 //	                                          # (prints the LAN address to share)
+//
+// The PORT environment variable, set by most hosting platforms, is used when
+// -addr is not given.
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"mahjong/server/internal/room"
 	"mahjong/server/internal/ws"
 )
 
 func main() {
-	addr := flag.String("addr", ":8080", "listen address")
+	defaultAddr := ":8080"
+	if p := os.Getenv("PORT"); p != "" {
+		defaultAddr = ":" + p
+	}
+	addr := flag.String("addr", defaultAddr, "listen address (default :$PORT, else :8080)")
 	web := flag.String("web", "", "directory with the built frontend to serve at / (optional)")
 	origins := flag.String("origins", "localhost:*,127.0.0.1:*", "comma-separated Origin hosts allowed to open a WebSocket")
 	flag.Parse()
@@ -44,7 +57,22 @@ func main() {
 			}
 		}
 	}
-	log.Fatal(http.ListenAndServe(*addr, mux))
+
+	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	}()
+
+	// Stop on Ctrl+C or SIGTERM (sent by Docker and hosting platforms).
+	stop, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	<-stop.Done()
+	log.Printf("shutting down")
+	ctx, done := context.WithTimeout(context.Background(), 5*time.Second)
+	defer done()
+	_ = srv.Shutdown(ctx) // open WebSockets are hijacked; Shutdown does not wait for them
 }
 
 // lanURLs lists http://<ip>:<port> for each private IPv4 address of this
