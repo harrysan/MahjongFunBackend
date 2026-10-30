@@ -18,7 +18,7 @@ Semua aturan di sini sudah dikonfirmasi pemilik proyek, kecuali yang bertanda **
 
 | Bagian | Teknologi |
 |---|---|
-| Backend | Go 1.22+, `net/http`, `github.com/coder/websocket` (atau gorilla/websocket) |
+| Backend | Go 1.22+, `net/http`, `github.com/coder/websocket` v1.8.12 (versi terakhir yang mendukung Go 1.22) |
 | Frontend | Vue 3 (Composition API), Pinia, Vite, TypeScript |
 | Komunikasi | WebSocket, pesan JSON |
 | Penyimpanan | State game di memori. Database ditunda sampai ada kebutuhan akun/riwayat |
@@ -30,6 +30,7 @@ mahjong/
   SPEC.md
   server/
     cmd/server/main.go
+    cmd/sim/      # simulasi bot vs bot
     internal/
       engine/     # aturan game murni, TANPA I/O, TANPA goroutine
       bot/        # logika bot, memakai engine
@@ -109,7 +110,8 @@ Bonus tile tidak dihitung.
 
 ### 4.6 Timer
 
-- Giliran buang: 30 detik. Jika habis, server membuang tile yang baru diambil secara otomatis.
+- Giliran buang: 30 detik. Jika habis, server membuang tile yang baru diambil secara otomatis
+  (setelah chi/pung, yang dibuang adalah tile terakhir yang boleh dibuang).
 - Jendela klaim: 10 detik. Jika habis, dianggap pass.
 - Pemain yang terputus: bot mengambil alih kursinya sampai ia kembali (`rejoin_room`).
   Di ruang tunggu kursinya disimpan 60 detik. Jika tidak ada pemain manusia yang tersambung,
@@ -234,7 +236,7 @@ Halaman:
 - **Ruang tunggu:** kode room, daftar kursi, host menambah/menghapus bot dan mengubah pengaturan, lalu mulai.
 - **Table:** 4 kursi (diri sendiri di bawah), tangan, tile buangan per pemain, set terbuka, bonus tile, sisa wall, tombol aksi (Chi/Pung/Kong/Hu/Pass), penghitung waktu.
 
-Tile dirender dengan SVG atau emoji/Unicode mahjong dulu. Aset gambar bisa diganti belakangan.
+Tile dirender dengan gambar PNG di `web/src/assets/tiles` (pemetaan nama file ada di `web/src/tiles.ts`).
 State hanya dari Pinia store yang diisi pesan server. Klien tidak menghitung aturan.
 
 ## 10. Persyaratan Test
@@ -254,21 +256,88 @@ Wajib ada unit test (`go test ./...`) untuk:
 
 Perkiraan untuk 1,5-2 jam per malam (sekitar 10-14 jam per minggu).
 
+### 11.1 Tahap 1: game bisa dimainkan (selesai)
+
+| Milestone | Isi | Status |
+|---|---|---|
+| M0 | Setup repo, SPEC final | Selesai |
+| M1 | Engine: tile, wall, bagi, bonus, buang, ambil, deteksi hu + test | Selesai |
+| M2 | Engine: chi/pung/kong, prioritas klaim, seri + test | Selesai |
+| M3 | Bot v1 + simulasi bot vs bot | Selesai |
+| M4 | WebSocket + UI meja, solo vs 3 bot **bisa dimainkan** | Selesai |
+| M5 | Lobby, multiplayer manusia | Selesai |
+| M6 | Reconnect, bot pengganti, timer, polish, deploy | Selesai |
+
+### 11.2 Tahap 2: rencana berikutnya
+
+Urutan disusun dari yang paling aman (tidak mengubah aturan) ke yang paling besar.
+Milestone bertanda **[PERLU KEPUTUSAN]** mengubah aturan atau arsitektur; jawab pertanyaannya
+di bagian 13 dulu sebelum mulai mengerjakan.
+
 | Milestone | Isi | Perkiraan |
 |---|---|---|
-| M0 | Setup repo, SPEC final | Minggu 1 |
-| M1 | Engine: tile, wall, bagi, bonus, buang, ambil, deteksi hu + test | Minggu 1-2 |
-| M2 | Engine: chi/pung/kong, prioritas klaim, seri + test | Minggu 2-3 |
-| M3 | Bot v1 + simulasi bot vs bot | Minggu 3-4 |
-| M4 | WebSocket + UI meja, solo vs 3 bot **bisa dimainkan** | Minggu 4-6 |
-| M5 | Lobby, multiplayer manusia | Minggu 6-8 |
-| M6 | Reconnect, bot pengganti, timer, polish, deploy | Minggu 8-10 |
+| M7 | Stabilitas dan test otomatis | Minggu 11-12 |
+| M8 | Pengalaman bermain di meja | Minggu 12-14 |
+| M9 | Fitur room dan sosial | Minggu 14-16 |
+| M10 | Bot v2 dan tingkat kesulitan | Minggu 16-18 |
+| M11 | Skor dan aturan opsional **[PERLU KEPUTUSAN]** | Minggu 18-21 |
+| M12 | Persistensi, akun, riwayat **[PERLU KEPUTUSAN]** | Minggu 21-25 |
+
+**M7: Stabilitas dan test otomatis**
+- CI (misalnya GitHub Actions): `go vet`, `go test ./...`, `go run ./cmd/sim`, `npm run build` di setiap push.
+- Test end-to-end di browser (misalnya Playwright): main solo sampai ronde selesai, dua pemain di room yang sama,
+  refresh di tengah ronde lalu kembali ke kursi.
+- Unit test frontend (Vitest) untuk store `game`: sesi, reconnect, pemetaan pesan server.
+- Batas penyalahgunaan: ukuran pesan maksimal, batas pesan per detik per koneksi, batas jumlah room per server.
+- Log terstruktur (`log/slog`) untuk room dibuat/ditutup, error, dan reconnect.
+- Selesai jika: CI hijau, test e2e berjalan di CI, server tetap stabil saat dikirimi pesan sampah.
+
+**M8: Pengalaman bermain di meja**
+- Animasi ambil, buang, dan klaim; animasi lempar dadu (bagian 4.7 menyebut klien menampilkan animasi dadu).
+- Suara (buang, klaim, giliranmu, menang) dengan tombol bisu yang diingat di `localStorage`.
+- Tangan bisa diurutkan ulang manual (seret), selain urutan otomatis.
+- Tampilan HP: layout landscape yang nyaman, tile cukup besar untuk disentuh.
+- PWA: bisa dipasang di layar utama HP, ikon dan layar pembuka.
+- Selesai jika: satu ronde penuh nyaman dimainkan di HP dan desktop tanpa zoom.
+
+**M9: Fitur room dan sosial**
+- Chat singkat dan emote di meja dan ruang tunggu (dengan batas panjang dan laju pesan).
+- Host bisa mengeluarkan pemain (kick) dan menyerahkan peran host ke pemain lain.
+- Penonton: masuk room yang penuh/berjalan tanpa melihat tangan siapa pun.
+- Tambahan protokol (nama pesan final ditentukan saat mengerjakan): `chat`, `kick`, `transfer_host`,
+  `join_room` dengan `spectate: true`.
+- Selesai jika: semua aksi baru tervalidasi di server dan punya test di paket `room`.
+
+**M10: Bot v2 dan tingkat kesulitan**
+- Bot menghitung jarak ke tangan lengkap (shanten) dan memilih buangan yang memperbesar peluang menang.
+- Bot memperhitungkan tile yang sudah terlihat (buangan, set terbuka) dan menghindari membuang tile berbahaya.
+- Tingkat kesulitan per kursi: Mudah (v1), Normal, Sulit. Dipilih host di ruang tunggu.
+- Bot tetap hanya memakai `LegalActions` dari engine.
+- Selesai jika: simulasi menunjukkan bot Sulit menang lebih sering dari bot v1 (misalnya 1000 game,
+  1 bot Sulit vs 3 bot v1), dan simulasi tetap tanpa panic.
+
+**M11: Skor dan aturan opsional [PERLU KEPUTUSAN]**
+- Sistem skor per ronde dan total skor sepanjang sesi room.
+- Tangan spesial (tujuh pasang, 13 yatim) sebagai opsi room, default mati.
+- Riwayat ronde di dalam sesi: siapa menang, dengan tangan apa, berapa poin.
+- Engine tetap murni; perhitungan skor diuji dengan tabel kasus seperti deteksi hu (bagian 10).
+- Selesai jika: aturan skor tertulis lengkap di bagian 4 dan setiap pola skor punya test.
+
+**M12: Persistensi, akun, riwayat [PERLU KEPUTUSAN]**
+- Database (misalnya SQLite untuk mulai, Postgres jika perlu) untuk akun, statistik, dan riwayat game.
+- Room yang sedang berjalan bisa bertahan saat server restart/deploy ulang (snapshot state room).
+- Akun opsional: tamu tetap bisa main tanpa daftar.
+- Statistik pemain (jumlah main, menang, seri) dan replay ronde. Replay cukup menyimpan seed dan
+  urutan aksi, karena engine deterministik.
+- Selesai jika: restart server tidak mengakhiri room, dan replay menghasilkan state yang sama persis.
 
 ## 12. Panduan untuk Roo Code / AI Coding
 
 - Kerjakan **satu task kecil** per sesi. Contoh: "implementasi `DetectWin` di `engine/win.go` sesuai SPEC.md bagian 4.5, lengkap dengan test".
 - Jangan ubah paket `engine` tanpa menjalankan `go test ./...`.
-- Jangan menambah fitur di luar SPEC ini (skor, tangan spesial, akun) kecuali diminta.
+- Jangan menambah fitur di luar SPEC ini kecuali diminta. Skor, tangan spesial, dan akun baru boleh
+  dikerjakan di milestone-nya (M11, M12) setelah pertanyaan di bagian 13 dijawab.
+- Kerjakan milestone tahap 2 sesuai urutan, kecuali pemilik proyek memilih urutan lain.
 - Jika aturan ambigu, tanyakan, jangan menebak.
 - Komentar dan identifier dalam bahasa Inggris, UI dalam bahasa Indonesia.
 
@@ -286,3 +355,13 @@ Masih berupa asumsi:
 
 - Ronde seri: dealer tetap sama.
 - Dadu: 2 dadu, pemenang dihitung sebagai hitungan ke-1.
+
+Pertanyaan terbuka untuk tahap 2 (harus dijawab sebelum milestone terkait dimulai):
+
+- **M11, skor:** pakai sistem skor apa (misalnya fan sederhana gaya Hong Kong, atau poin tetap per jenis menang)?
+  Apakah hu dari wall dan hu dari buangan dinilai berbeda? Siapa yang membayar saat hu dari buangan:
+  hanya pembuang, atau semua pemain?
+- **M11, tangan spesial:** tangan mana saja yang didukung, dan apakah aktif per room atau global?
+- **M11, angin:** apakah angin ronde dan angin kursi mulai berpengaruh ke skor (saat ini tidak, lihat 4.7)?
+- **M12, akun:** login dengan apa (email + kata sandi, atau Google/OAuth)? Apakah tamu tetap boleh main?
+- **M12, hosting:** di mana server dan database akan dijalankan? Ini menentukan pilihan SQLite atau Postgres.
