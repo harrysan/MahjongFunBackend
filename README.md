@@ -42,6 +42,15 @@ npm run dev            # buka http://localhost:5173
 Atau tanpa Vite: `cd web && npm run build`, lalu `cd server && go run ./cmd/server -web ../web/dist`
 dan buka http://localhost:8080.
 
+### Main bersama di satu jaringan (Wi-Fi/LAN)
+
+- Mode build: `go run ./cmd/server -web ../web/dist` mencetak alamat seperti
+  `open on this network: http://192.168.1.14:8080`. Buka alamat itu di **semua** perangkat,
+  termasuk komputermu sendiri (bukan `localhost`), agar tautan undangan bisa dipakai teman.
+- Mode dev: `npm run dev` juga bisa diakses dari jaringan; buka alamat `Network:` yang dicetak Vite.
+- Jika teman tidak bisa membuka halaman: izinkan program di Windows Firewall untuk jaringan
+  *Private*, dan pastikan profil Wi-Fi bukan *Public*.
+
 ## Struktur
 
 ```
