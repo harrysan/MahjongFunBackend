@@ -21,7 +21,7 @@ Aturan lengkap, protokol, dan roadmap ada di [SPEC.md](SPEC.md). Dokumen itu acu
 
 ## Status
 
-Tahap 1 (M0-M6) selesai. Rencana berikutnya ada di [SPEC.md bagian 11](SPEC.md#11-roadmap).
+Tahap 1 (M0-M6) selesai, tahap 2 sedang berjalan. Rencana lengkap ada di [SPEC.md bagian 11](SPEC.md#11-roadmap).
 
 - [x] M0: struktur repo, SPEC final
 - [x] M1: engine dasar (tile, wall, bagi, tile bunga, ambil/buang, hu dari wall, penentuan dealer) + test
@@ -30,6 +30,8 @@ Tahap 1 (M0-M6) selesai. Rencana berikutnya ada di [SPEC.md bagian 11](SPEC.md#1
 - [x] M4: WebSocket + UI meja, solo vs 3 bot bisa dimainkan; gambar tile PNG; pengaturan waktu
 - [x] M5: lobby (solo, buat room, gabung via kode/tautan), ruang tunggu, multiplayer manusia
 - [x] M6: reconnect, bot pengganti, timer, heartbeat, Docker
+- [x] M7: CI, test end-to-end di browser, unit test frontend, batas spam pesan, log terstruktur
+- [ ] M8: animasi, suara, tampilan HP, PWA
 
 ## Kebutuhan
 
@@ -73,6 +75,8 @@ Buka http://localhost:8080. Server menyajikan halaman dan WebSocket dari satu po
 | `-addr` | `:$PORT`, atau `:8080` | Alamat listen |
 | `-web` | kosong | Folder hasil build frontend yang disajikan di `/`. Jika diisi, server juga mencetak alamat LAN |
 | `-origins` | `localhost:*,127.0.0.1:*` | Host `Origin` lain yang boleh membuka WebSocket (dipisah koma). Halaman dari host yang sama selalu diizinkan |
+| `-log-level` | `info` | `debug` (juga mencatat setiap koneksi), `info`, `warn`, `error` |
+| `-log-format` | `text` | `text`, atau `json` untuk layanan pengumpul log |
 
 Endpoint: `/ws` (WebSocket), `/healthz` (health check).
 
@@ -82,16 +86,40 @@ Endpoint: `/ws` (WebSocket), `/healthz` (health check).
 cd server
 go test ./...                    # semua test: engine, bot, room, ws
 go test ./... -v                 # detail per test
+go test -race ./...              # dengan race detector (butuh gcc; di CI otomatis)
 go vet ./...
 go run ./cmd/sim                 # 1000 game bot vs bot, cek tidak ada panic
 go run ./cmd/sim -games 50 -seed 7 -v   # -v mencetak semua event game pertama
 
 cd ../web
+npm test                         # unit test (Vitest): store game, pengaturan
 npm run typecheck                # cek tipe TypeScript/Vue
 npm run build                    # typecheck + build produksi
 ```
 
 Wajib menjalankan `go test ./...` setiap kali mengubah `server/internal/engine`.
+
+### Test end-to-end (browser)
+
+Test di `web/e2e` (Playwright) membuka Chromium sungguhan dan bermain melawan server Go:
+main solo sampai ronde selesai, dua pemain di room yang sama, refresh di tengah ronde,
+dan koneksi putus lalu tersambung kembali.
+
+```bash
+cd web
+npx playwright install chromium  # sekali saja (unduh browser)
+npm run build                    # e2e memakai hasil build di web/dist
+npm run test:e2e                 # menjalankan server sendiri di port 8091
+```
+
+Jika ada yang gagal, jejaknya (trace) tersimpan di `web/test-results`; buka dengan
+`npx playwright show-trace <file>.zip`.
+
+### CI
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) berjalan di setiap push dan pull request:
+gofmt, `go vet`, `go test -race`, simulasi 1000 game, unit test frontend, build, dan test e2e.
+Laporan Playwright diunggah sebagai artifact jika test e2e gagal.
 
 ## Main bersama di satu jaringan (Wi-Fi/LAN)
 
@@ -113,6 +141,8 @@ docker run -p 8080:8080 mahjong-fun      # buka http://localhost:8080
 - Server memakai env `PORT` jika ada (Render, Fly.io, Railway, Cloud Run, dan lain-lain), selain itu 8080.
 - Health check: `GET /healthz`.
 - Server berhenti dengan rapi saat menerima SIGTERM.
+- Perlindungan bawaan: pesan maksimal 4 KB, rata-rata 10 pesan/detik per koneksi (lonjakan 20),
+  koneksi yang terus membanjiri diputus, dan maksimal 1000 room terbuka per server.
 - Jika di belakang reverse proxy (Nginx, Caddy), pastikan WebSocket di `/ws` diteruskan
   (header `Upgrade`/`Connection`). Pakai HTTPS di production; klien otomatis memakai `wss://`.
 
@@ -129,6 +159,7 @@ docker run -p 8080:8080 mahjong-fun      # buka http://localhost:8080
 ```
 SPEC.md                  aturan, protokol, roadmap (acuan utama)
 Dockerfile               build web + server menjadi satu image
+.github/workflows        CI
 server/
   cmd/server             entry point HTTP + WebSocket
   cmd/sim                simulasi bot vs bot
@@ -141,6 +172,8 @@ web/
   src/views              Lobby, WaitingRoom, Table
   src/components         Tile, Hand, DiscardPile, ActionBar, Seat, SettingsForm
   src/assets/tiles       gambar tile PNG
+  src/**/*.test.ts       unit test (Vitest)
+  e2e/                   test browser (Playwright)
 ```
 
 Alur data: klien hanya mengirim aksi (`discard`, `claim`, ...). Server memvalidasi lewat engine

@@ -6,7 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -20,7 +20,6 @@ import (
 const (
 	sendBuffer   = 256
 	writeTimeout = 10 * time.Second
-	maxReadBytes = 4096
 	// A ping every pingInterval finds connections that died without a close
 	// (phone asleep, Wi-Fi gone), so the player's seat is handed to a bot.
 	pingInterval = 20 * time.Second
@@ -32,6 +31,11 @@ type Handler struct {
 	Rooms *room.Manager
 	// OriginPatterns lists extra allowed Origin hosts (e.g. "localhost:5173").
 	OriginPatterns []string
+	// Logger receives connection logs. nil = slog.Default().
+	Logger *slog.Logger
+	// MsgRate and MsgBurst override the per-connection message limit
+	// (see limit.go); 0 = the defaults. Tests that play at machine speed raise them.
+	MsgRate, MsgBurst float64
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -43,15 +47,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	cl := &client{conn: c, ctx: ctx, cancel: cancel, send: make(chan room.Message, sendBuffer), rooms: h.Rooms, seat: -1}
+	logger := h.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	cl := &client{
+		conn: c, ctx: ctx, cancel: cancel, send: make(chan room.Message, sendBuffer), rooms: h.Rooms, seat: -1,
+		log: logger.With("remote", r.RemoteAddr), limit: newLimiter(orDefault(h.MsgRate, msgRate), orDefault(h.MsgBurst, msgBurst)),
+	}
+	cl.log.Debug("connection opened")
 	go cl.writeLoop()
 	go cl.pingLoop()
-	cl.readLoop()
+	status, reason := cl.readLoop()
 
 	if cl.room != nil {
 		cl.room.Disconnect(cl.seat, cl) // the player may come back with rejoin_room
 	}
-	c.Close(websocket.StatusNormalClosure, "")
+	c.Close(status, reason)
+}
+
+func orDefault(v, def float64) float64 {
+	if v > 0 {
+		return v
+	}
+	return def
 }
 
 // envelope is one client-to-server message.
@@ -67,9 +86,13 @@ type client struct {
 	send   chan room.Message
 	rooms  *room.Manager
 
-	// Set by join_room; only the read loop touches them.
-	room *room.Room
-	seat engine.Seat
+	log   *slog.Logger
+	limit *limiter
+
+	// Only the read loop touches these.
+	room    *room.Room // set by join_room / rejoin_room
+	seat    engine.Seat
+	dropped int // messages in a row refused by the rate limit
 }
 
 // Send queues a message. A client too slow to keep up is disconnected.
@@ -78,7 +101,7 @@ func (c *client) Send(m room.Message) {
 	case c.send <- m:
 	case <-c.ctx.Done():
 	default:
-		log.Printf("ws: send buffer full, dropping client")
+		c.log.Warn("send buffer full, dropping slow client")
 		c.cancel()
 	}
 }
@@ -99,6 +122,7 @@ func (c *client) pingLoop() {
 			err := c.conn.Ping(ctx)
 			cancel()
 			if err != nil {
+				c.log.Debug("ping failed", "err", err)
 				c.cancel()
 				return
 			}
@@ -123,12 +147,30 @@ func (c *client) writeLoop() {
 	}
 }
 
-func (c *client) readLoop() {
+// readLoop handles messages until the connection ends, and returns how to
+// close it.
+func (c *client) readLoop() (websocket.StatusCode, string) {
 	for {
 		_, b, err := c.conn.Read(c.ctx)
 		if err != nil {
-			return
+			// Includes messages over maxReadBytes: the library closes the
+			// connection with StatusMessageTooBig.
+			c.log.Debug("connection closed", "err", err)
+			return websocket.StatusNormalClosure, ""
 		}
+		if !c.limit.allow(time.Now()) {
+			c.dropped++
+			if c.dropped == 1 {
+				c.log.Warn("rate limited")
+				c.fail(errRateLimited)
+			}
+			if c.dropped >= maxDropped {
+				c.log.Warn("closing connection: kept flooding", "dropped", c.dropped)
+				return websocket.StatusPolicyViolation, "too many messages"
+			}
+			continue
+		}
+		c.dropped = 0
 		var env envelope
 		if json.Unmarshal(b, &env) != nil {
 			c.fail(errBadRequest)
@@ -143,9 +185,10 @@ func (c *client) readLoop() {
 func (c *client) fail(e *room.Error) { c.Send(room.Message{Type: room.MsgError, Data: e}) }
 
 var (
-	errBadRequest = &room.Error{Code: "bad_request", Message: "Pesan tidak dikenali."}
-	errNotInRoom  = &room.Error{Code: "not_in_room", Message: "Masuk ke room dulu."}
-	errInRoom     = &room.Error{Code: "already_in_room", Message: "Kamu sudah ada di room."}
+	errBadRequest  = &room.Error{Code: "bad_request", Message: "Pesan tidak dikenali."}
+	errNotInRoom   = &room.Error{Code: "not_in_room", Message: "Masuk ke room dulu."}
+	errInRoom      = &room.Error{Code: "already_in_room", Message: "Kamu sudah ada di room."}
+	errRateLimited = &room.Error{Code: "rate_limited", Message: "Terlalu banyak aksi. Tunggu sebentar."}
 )
 
 func (c *client) handle(env envelope) *room.Error {
@@ -299,5 +342,6 @@ func toError(err error) *room.Error {
 	if errors.As(err, &e) {
 		return e
 	}
-	return &room.Error{Code: "internal", Message: err.Error()}
+	slog.Error("unexpected room error", "err", err)
+	return &room.Error{Code: "internal", Message: "Terjadi kesalahan di server."}
 }

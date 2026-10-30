@@ -41,6 +41,8 @@ mahjong/
       stores/     # Pinia: connection, game state
       components/ # Tile, Hand, DiscardPile, ActionBar, Seat
       views/      # Lobby, WaitingRoom, Table
+    e2e/          # test browser (Playwright)
+  .github/workflows/ci.yml
 ```
 
 Aturan penting: paket `engine` tidak boleh mengimpor paket lain dari proyek.
@@ -198,6 +200,13 @@ Semua pesan: `{"type": "...", "data": {...}}`.
 | `claim_window` | Aksi yang boleh dilakukan pemain + sisa waktu |
 | `error` | `{code, message}` untuk aksi ditolak |
 
+Batas per koneksi (lihat `server/internal/ws/limit.go`):
+- Pesan lebih dari 4 KB menutup koneksi.
+- Rata-rata 10 pesan per detik, lonjakan sampai 20. Pesan di atas batas dibuang dan klien menerima
+  satu `error` `rate_limited`. Setelah 50 pesan berturut-turut dibuang, koneksi ditutup.
+- Server menerima paling banyak 1000 room terbuka; `join_room` dengan `create` setelah itu
+  ditolak dengan `server_full`.
+
 Contoh `game_state` (disederhanakan):
 
 ```json
@@ -251,6 +260,9 @@ Wajib ada unit test (`go test ./...`) untuk:
 - Penentuan dealer berikutnya dari pemenang dan total dadu (semua total 2-12, semua kursi pemenang).
 - Tidak ada merampok kong.
 - Simulasi 1000 game bot vs bot tanpa panic dan semua selesai.
+- Room dan WebSocket: reconnect, timer, batas pesan, pesan rusak tidak mengganggu pemain lain.
+- Frontend: unit test store `game` (Vitest) dan test end-to-end di browser (Playwright).
+- Semua test di atas dijalankan CI di setiap push.
 
 ## 11. Roadmap
 
@@ -276,14 +288,14 @@ di bagian 13 dulu sebelum mulai mengerjakan.
 
 | Milestone | Isi | Perkiraan |
 |---|---|---|
-| M7 | Stabilitas dan test otomatis | Minggu 11-12 |
+| M7 | Stabilitas dan test otomatis (selesai) | Minggu 11-12 |
 | M8 | Pengalaman bermain di meja | Minggu 12-14 |
 | M9 | Fitur room dan sosial | Minggu 14-16 |
 | M10 | Bot v2 dan tingkat kesulitan | Minggu 16-18 |
 | M11 | Skor dan aturan opsional **[PERLU KEPUTUSAN]** | Minggu 18-21 |
 | M12 | Persistensi, akun, riwayat **[PERLU KEPUTUSAN]** | Minggu 21-25 |
 
-**M7: Stabilitas dan test otomatis**
+**M7: Stabilitas dan test otomatis (selesai)**
 - CI (misalnya GitHub Actions): `go vet`, `go test ./...`, `go run ./cmd/sim`, `npm run build` di setiap push.
 - Test end-to-end di browser (misalnya Playwright): main solo sampai ronde selesai, dua pemain di room yang sama,
   refresh di tengah ronde lalu kembali ke kursi.

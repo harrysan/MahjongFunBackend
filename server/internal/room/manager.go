@@ -38,6 +38,10 @@ func (m *Manager) Join(roomName, playerName string, create bool, c Client) (*Roo
 		case r != nil && create:
 			m.mu.Unlock()
 			return nil, -1, ErrRoomExists
+		case r == nil && len(m.rooms) >= m.opts.maxRooms():
+			m.mu.Unlock()
+			m.opts.logger().Warn("room limit reached", "rooms", len(m.rooms))
+			return nil, -1, ErrServerFull
 		case r == nil:
 			r = newRoom(roomName, m, m.opts)
 			m.rooms[roomName] = r

@@ -54,7 +54,8 @@ type msg struct {
 // TestSoloOverWebSocket plays one solo round through a real WebSocket connection.
 func TestSoloOverWebSocket(t *testing.T) {
 	rooms := room.NewManager(room.Options{BotDelay: func(*rand.Rand) time.Duration { return 0 }, Seed: 3})
-	srv := httptest.NewServer(&Handler{Rooms: rooms})
+	// Bots answer instantly, so this player sends far faster than a human could.
+	srv := httptest.NewServer(&Handler{Rooms: rooms, MsgRate: 1e6, MsgBurst: 1e6})
 	defer srv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

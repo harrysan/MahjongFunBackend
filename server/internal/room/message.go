@@ -103,6 +103,7 @@ var (
 	ErrNotBot       = &Error{"not_bot", "Kursi itu tidak berisi bot."}
 	ErrBadToken     = &Error{"bad_token", "Sesi sudah tidak berlaku."}
 	ErrSessionMoved = &Error{"session_moved", "Permainan ini dibuka di tab atau perangkat lain."}
+	ErrServerFull   = &Error{"server_full", "Server sedang penuh. Coba lagi beberapa saat lagi."}
 )
 
 // engineError converts an engine error into a player-facing Error.

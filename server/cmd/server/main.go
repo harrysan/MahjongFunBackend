@@ -5,14 +5,16 @@
 //	                                          # (prints the LAN address to share)
 //
 // The PORT environment variable, set by most hosting platforms, is used when
-// -addr is not given.
+// -addr is not given. Logs go to stderr; -log-format json suits log
+// collectors, -log-level debug also shows every connection.
 package main
 
 import (
 	"context"
 	"errors"
 	"flag"
-	"log"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -33,7 +35,16 @@ func main() {
 	addr := flag.String("addr", defaultAddr, "listen address (default :$PORT, else :8080)")
 	web := flag.String("web", "", "directory with the built frontend to serve at / (optional)")
 	origins := flag.String("origins", "localhost:*,127.0.0.1:*", "comma-separated Origin hosts allowed to open a WebSocket")
+	logLevel := flag.String("log-level", "info", "debug, info, warn or error")
+	logFormat := flag.String("log-format", "text", "text or json")
 	flag.Parse()
+
+	logger, err := newLogger(*logLevel, *logFormat)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	slog.SetDefault(logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -47,13 +58,13 @@ func main() {
 		mux.Handle("/", http.FileServer(http.Dir(*web)))
 	}
 
-	log.Printf("mahjong server listening on %s", *addr)
+	slog.Info("mahjong server listening", "addr", *addr, "web", *web)
 	if *web != "" {
 		for i, u := range lanURLs(*addr) {
 			if i == 0 {
-				log.Printf("  open on this network: %s", u)
+				slog.Info("open on this network: " + u)
 			} else {
-				log.Printf("  other addresses:      %s", u)
+				slog.Info("other address: " + u)
 			}
 		}
 	}
@@ -61,7 +72,8 @@ func main() {
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal(err)
+			slog.Error("server stopped", "err", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -69,10 +81,25 @@ func main() {
 	stop, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	<-stop.Done()
-	log.Printf("shutting down")
+	slog.Info("shutting down")
 	ctx, done := context.WithTimeout(context.Background(), 5*time.Second)
 	defer done()
 	_ = srv.Shutdown(ctx) // open WebSockets are hijacked; Shutdown does not wait for them
+}
+
+func newLogger(level, format string) (*slog.Logger, error) {
+	var lv slog.Level
+	if err := lv.UnmarshalText([]byte(level)); err != nil {
+		return nil, fmt.Errorf("bad -log-level %q: use debug, info, warn or error", level)
+	}
+	opts := &slog.HandlerOptions{Level: lv}
+	switch format {
+	case "text":
+		return slog.New(slog.NewTextHandler(os.Stderr, opts)), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(os.Stderr, opts)), nil
+	}
+	return nil, fmt.Errorf("bad -log-format %q: use text or json", format)
 }
 
 // lanURLs lists http://<ip>:<port> for each private IPv4 address of this

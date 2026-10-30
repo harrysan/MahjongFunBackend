@@ -633,3 +633,22 @@ func TestWaitingRoomGrace(t *testing.T) {
 	}
 	b.roomStateWith(t, func(st RoomState) bool { return st.Seats[sa].Kind == "empty" })
 }
+
+func TestRoomLimit(t *testing.T) {
+	m := NewManager(Options{BotDelay: noDelay, Seed: 1, MaxRooms: 2})
+	for _, code := range []string{"A1", "A2"} {
+		if _, _, err := m.Join(code, "Ani", true, newFakeClient()); err != nil {
+			t.Fatalf("create %s: %v", code, err)
+		}
+	}
+	if _, _, err := m.Join("A3", "Ani", true, newFakeClient()); err != ErrServerFull {
+		t.Errorf("third room: %v, want server_full", err)
+	}
+	// Joining an open room still works at the limit.
+	if _, s, err := m.Join("A1", "Budi", false, newFakeClient()); err != nil || s != 1 {
+		t.Errorf("join at the limit: seat %d err %v", s, err)
+	}
+	if m.Count() != 2 {
+		t.Errorf("%d rooms open, want 2", m.Count())
+	}
+}

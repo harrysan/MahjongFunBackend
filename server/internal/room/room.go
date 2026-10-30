@@ -9,7 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	mrand "math/rand"
 	"time"
 
@@ -50,6 +50,24 @@ type Options struct {
 	// TimeUnit is the length of one "second" for every room clock (turns,
 	// claims, reconnect grace, idle close). 0 = time.Second; tests shrink it.
 	TimeUnit time.Duration
+	// MaxRooms caps how many rooms may be open at once. 0 = MaxRooms.
+	MaxRooms int
+	// Logger receives room lifecycle logs. nil = slog.Default().
+	Logger *slog.Logger
+}
+
+func (o Options) logger() *slog.Logger {
+	if o.Logger != nil {
+		return o.Logger
+	}
+	return slog.Default()
+}
+
+func (o Options) maxRooms() int {
+	if o.MaxRooms > 0 {
+		return o.MaxRooms
+	}
+	return MaxRooms
 }
 
 type Room struct {
@@ -58,6 +76,7 @@ type Room struct {
 	opts  Options
 	inbox chan func()
 	done  chan struct{}
+	log   *slog.Logger
 
 	// Everything below is touched only by the room goroutine.
 	seats     [engine.NumSeats]seat
@@ -87,10 +106,12 @@ func newRoom(name string, mgr *Manager, opts Options) *Room {
 		opts:     opts,
 		inbox:    make(chan func(), 64),
 		done:     make(chan struct{}),
+		log:      opts.logger().With("room", name),
 		host:     -1,
 		rng:      mrand.New(mrand.NewSource(seed)),
 		settings: DefaultSettings(),
 	}
+	r.log.Info("room created")
 	go r.loop()
 	return r
 }
@@ -167,6 +188,7 @@ func (r *Room) doJoin(name string, c Client) (engine.Seat, error) {
 			r.seats[s] = seat{kind: seatHuman, name: name, token: newToken(), client: c}
 			r.connGen++
 			r.fixHost()
+			r.log.Info("player joined", "seat", s, "name", name)
 			r.broadcastRoom()
 			return engine.Seat(s), nil
 		}
@@ -182,8 +204,10 @@ func (r *Room) doRejoin(token string, c Client) (engine.Seat, error) {
 		}
 	}
 	if s < 0 {
+		r.log.Info("rejoin refused", "reason", "bad token")
 		return -1, ErrBadToken
 	}
+	r.log.Info("player rejoined", "seat", s, "replaced_connection", r.seats[s].client != nil)
 	if old := r.seats[s].client; old != nil {
 		// The same player opened the game somewhere else; the newest connection wins.
 		old.Send(Message{Type: MsgError, Data: ErrSessionMoved})
@@ -329,6 +353,7 @@ func (r *Room) Leave(by engine.Seat) {
 		if !by.Valid() || r.seats[by].kind != seatHuman {
 			return
 		}
+		r.log.Info("player left", "seat", by)
 		if r.game == nil {
 			r.seats[by] = seat{}
 		} else {
@@ -347,6 +372,7 @@ func (r *Room) Disconnect(by engine.Seat, c Client) {
 		if !by.Valid() || r.seats[by].kind != seatHuman || r.seats[by].client != c {
 			return // already left, or replaced by a newer connection
 		}
+		r.log.Info("player disconnected", "seat", by)
 		st := &r.seats[by]
 		st.client = nil
 		if st.bot == nil {
@@ -367,6 +393,7 @@ func (r *Room) expireAway(s engine.Seat, token string) {
 	if r.game != nil || st.kind != seatHuman || st.client != nil || st.token != token {
 		return
 	}
+	r.log.Info("seat freed: player did not come back", "seat", s)
 	r.seats[s] = seat{}
 	r.afterSeatChange()
 }
@@ -376,7 +403,7 @@ func (r *Room) expireAway(s engine.Seat, token string) {
 func (r *Room) afterSeatChange() {
 	r.fixHost()
 	if r.host < 0 {
-		r.closeRoom()
+		r.closeRoom("no players left")
 		return
 	}
 	if r.connectedHumans() == 0 {
@@ -384,7 +411,7 @@ func (r *Room) afterSeatChange() {
 		gen := r.connGen
 		r.after(IdleRoomTimeout, func() {
 			if gen == r.connGen && r.connectedHumans() == 0 {
-				r.closeRoom()
+				r.closeRoom("idle")
 			}
 		})
 		return
@@ -430,6 +457,9 @@ func (r *Room) connectedHumans() int {
 // freeze stops the game clock and bot moves while nobody is connected, so the
 // round does not play itself out while everyone is reconnecting.
 func (r *Room) freeze() {
+	if r.game != nil && !r.game.Ended() {
+		r.log.Info("round paused: nobody connected")
+	}
 	r.epoch++
 	r.botQueued = [engine.NumSeats]bool{}
 	r.timerEpoch = r.epoch
@@ -443,7 +473,8 @@ func (r *Room) resume() {
 	r.armTimer()
 }
 
-func (r *Room) closeRoom() {
+func (r *Room) closeRoom(reason string) {
+	r.log.Info("room closed", "reason", reason)
 	r.closed = true
 	close(r.done)
 	r.mgr.remove(r)
@@ -465,6 +496,7 @@ func (r *Room) scaled(d time.Duration) time.Duration {
 func (r *Room) startRound(dealer engine.Seat) {
 	r.dealer = dealer
 	r.game = engine.NewGame(r.rng.Int63(), dealer)
+	r.log.Info("round started", "dealer", dealer, "humans", r.connectedHumans())
 	r.epoch++
 	r.botQueued = [engine.NumSeats]bool{}
 	r.armTimer()
@@ -496,6 +528,13 @@ func (r *Room) afterApply(events []engine.Event) {
 		claimOpened = claimOpened || e.Type == engine.EventClaimWindow
 	}
 	if r.game.Ended() {
+		if res, ok := r.game.Result(); ok {
+			if res.Draw {
+				r.log.Info("round ended", "draw", true)
+			} else {
+				r.log.Info("round ended", "winner", res.Winner, "self_draw", res.SelfDraw)
+			}
+		}
 		r.broadcastRoom()
 	}
 	r.sendStates()
@@ -582,7 +621,7 @@ func (r *Room) botMove(s engine.Seat, epoch int) {
 	events, err := r.game.Apply(s, a)
 	if err != nil {
 		// Should never happen: the bot only picks legal actions.
-		log.Printf("room %q: bot at seat %d chose %+v: %v", r.name, s, a, err)
+		r.log.Error("bot chose an illegal action", "seat", s, "action", a.Type, "err", err)
 		if events, err = r.game.Apply(s, v.LegalActions[len(v.LegalActions)-1]); err != nil {
 			return
 		}
@@ -646,7 +685,7 @@ func (r *Room) onTimeout(epoch int) {
 		events, err = r.game.Apply(s, autoDiscard(r.game.ViewFor(s)))
 	}
 	if err != nil {
-		log.Printf("room %q: timeout: %v", r.name, err)
+		r.log.Error("timeout move failed", "err", err)
 		return
 	}
 	r.afterApply(events)

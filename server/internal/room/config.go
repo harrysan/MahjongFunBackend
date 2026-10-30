@@ -31,6 +31,9 @@ const (
 const (
 	MaxRoomNameLen   = 32
 	MaxPlayerNameLen = 20
+	// MaxRooms caps the open rooms per server, so a flood of create
+	// requests cannot use up its memory (see Options.MaxRooms).
+	MaxRooms = 1000
 )
 
 // Settings are the per-room options the host picks before a round.
