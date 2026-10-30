@@ -17,6 +17,12 @@ Aturan lengkap, protokol, dan roadmap ada di [SPEC.md](SPEC.md). Dokumen itu acu
   atau tanpa batas. Jika waktu habis, server membuang tile otomatis atau menganggap pass.
 - **Reconnect:** refresh halaman atau koneksi putus kembali ke kursi yang sama. Selama terputus, bot
   memainkan kursimu. Jika semua pemain manusia terputus, permainan dibekukan; room ditutup setelah 5 menit.
+- **Meja yang hidup:** animasi buang, ambil, klaim ("Pung!", "Hu!"), dan lempar dadu; suara sintetis
+  (tanpa file) dengan tombol bisu yang diingat.
+- **Susun tangan sendiri:** seret tile dengan mouse atau jari; tombol "Urutkan" mengembalikan urutan otomatis.
+- **Nyaman di HP:** seluruh meja muat satu layar, landscape maupun portrait (tangan dua baris).
+  Di layar sentuh, ketuk sekali untuk memilih tile dan ketuk lagi untuk membuang.
+- **Bisa dipasang sebagai aplikasi (PWA)** di HP dan desktop.
 - **Main di jaringan lokal** (Wi-Fi/LAN) dan **deploy** dengan satu image Docker.
 
 ## Status
@@ -31,7 +37,7 @@ Tahap 1 (M0-M6) selesai, tahap 2 sedang berjalan. Rencana lengkap ada di [SPEC.m
 - [x] M5: lobby (solo, buat room, gabung via kode/tautan), ruang tunggu, multiplayer manusia
 - [x] M6: reconnect, bot pengganti, timer, heartbeat, Docker
 - [x] M7: CI, test end-to-end di browser, unit test frontend, batas spam pesan, log terstruktur
-- [ ] M8: animasi, suara, tampilan HP, PWA
+- [x] M8: animasi (termasuk dadu), suara, susun tangan manual, tampilan HP, PWA
 
 ## Kebutuhan
 
@@ -141,6 +147,9 @@ docker run -p 8080:8080 mahjong-fun      # buka http://localhost:8080
 - Server memakai env `PORT` jika ada (Render, Fly.io, Railway, Cloud Run, dan lain-lain), selain itu 8080.
 - Health check: `GET /healthz`.
 - Server berhenti dengan rapi saat menerima SIGTERM.
+- PWA: browser hanya menawarkan "Pasang aplikasi" di HTTPS atau `localhost`. Lewat alamat LAN
+  (`http://192.168...`) game tetap bisa dimainkan, tetapi tidak bisa dipasang.
+  Di iPhone/iPad pakai Share > Add to Home Screen.
 - Perlindungan bawaan: pesan maksimal 4 KB, rata-rata 10 pesan/detik per koneksi (lonjakan 20),
   koneksi yang terus membanjiri diputus, dan maksimal 1000 room terbuka per server.
 - Jika di belakang reverse proxy (Nginx, Caddy), pastikan WebSocket di `/ws` diteruskan
@@ -172,6 +181,7 @@ web/
   src/views              Lobby, WaitingRoom, Table
   src/components         Tile, Hand, DiscardPile, ActionBar, Seat, SettingsForm
   src/assets/tiles       gambar tile PNG
+  public/                manifest PWA, service worker, ikon
   src/**/*.test.ts       unit test (Vitest)
   e2e/                   test browser (Playwright)
 ```

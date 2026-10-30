@@ -1,0 +1,17 @@
+{
+  "name": "Mahjong Fun",
+  "short_name": "Mahjong",
+  "description": "Mahjong 4 pemain: main solo melawan bot atau bersama teman.",
+  "lang": "id",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1f5c42",
+  "theme_color": "#1f5c42",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

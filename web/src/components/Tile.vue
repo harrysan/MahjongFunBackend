@@ -67,9 +67,13 @@ img {
 }
 
 .clickable { cursor: pointer; }
-.clickable:hover, .clickable:focus-visible {
+.clickable:focus-visible {
   transform: translateY(-18%);
   outline: none;
+}
+/* Only real mouse hover: on touch screens :hover sticks after a tap. */
+@media (hover: hover) {
+  .clickable:hover { transform: translateY(-18%); }
 }
 .highlight { outline: 3px solid #ffcf3f; outline-offset: 1px; }
 .dim { filter: brightness(0.8) saturate(0.7); }

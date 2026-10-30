@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { useConnectionStore } from './connection'
 import { tileName } from '../tiles'
+import { playSound } from '../sound'
 import type { Action, GameEvent, GameResult, PlayerView, RoomState, Seat, ServerMessage, Settings } from '../types'
 
 const MELD_VERBS: Record<string, string> = {
@@ -11,6 +12,10 @@ const MELD_VERBS: Record<string, string> = {
   concealed_kong: 'kong tertutup',
 }
 const MAX_LOG = 40
+// Big "Pung!" / "Hu!" shown over a seat when it claims or wins.
+const CALLOUTS: Record<string, string> = { chi: 'Chi!', pung: 'Pung!', kong: 'Kong!', concealed_kong: 'Kong!' }
+const CALLOUT_MS = 1600
+const DICE_MS = 4500
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no 0/O, 1/I
 const SOLO_PREFIX = 'SOLO-'
 // The server keeps a room with nobody connected for 5 minutes (IdleRoomTimeout).
@@ -74,6 +79,9 @@ export const useGameStore = defineStore('game', () => {
   const log = ref<string[]>([])
   const error = ref<string | null>(null)
   const dice = ref<{ dice: [number, number]; newDealer: Seat } | null>(null)
+  const callout = ref<{ seat: Seat; text: string; key: number } | null>(null)
+  // How the player arranged their hand (tile ids); null = the server's sorted order.
+  const handOrder = ref<number[] | null>(null)
   // Clock of the current turn / claim window, as local timestamps (ms).
   const deadline = ref<number | null>(null)
   const timeLimit = ref(0)
@@ -86,6 +94,8 @@ export const useGameStore = defineStore('game', () => {
   let pending: PendingJoin | null = null
   let errorTimer: number | undefined
   let diceTimer: number | undefined
+  let calloutTimer: number | undefined
+  let calloutKey = 0
   let retryTimer: number | undefined
   let retryCount = 0
   let giveUpAt = 0
@@ -119,27 +129,41 @@ export const useGameStore = defineStore('game', () => {
     return `${seatName(r.winner)} hu dari buangan ${seatName(r.from)} (${tileName(r.win_tile.kind)})!`
   }
 
+  function showCallout(seat: Seat, text: string) {
+    callout.value = { seat, text, key: ++calloutKey }
+    clearTimeout(calloutTimer)
+    calloutTimer = window.setTimeout(() => (callout.value = null), CALLOUT_MS)
+  }
+
   function onEvent(e: GameEvent) {
     const who = seatName(e.seat)
     const tiles = (e.tiles ?? []).map((t) => tileName(t.kind)).join(', ')
     switch (e.type) {
       case 'discarded':
         addLog(`${who} membuang ${tiles}`)
+        playSound('discard')
         break
       case 'claimed':
         addLog(`${who} ${MELD_VERBS[e.meld ?? ''] ?? 'klaim'}${tiles ? ': ' + tiles : ''}`)
+        showCallout(e.seat, CALLOUTS[e.meld ?? ''] ?? 'Klaim!')
+        playSound('claim')
         break
       case 'bonus':
         addLog(`${who} mendapat ${tiles}`)
         break
       case 'game_end':
-        if (e.result) addLog(resultText(e.result))
+        if (e.result) {
+          addLog(resultText(e.result))
+          if (!e.result.draw) showCallout(e.result.winner, 'Hu!')
+          playSound(!e.result.draw && e.result.winner === mySeat.value ? 'win' : 'end')
+        }
         break
       case 'dice_rolled':
         if (e.dice && e.new_dealer !== undefined) {
           dice.value = { dice: e.dice, newDealer: e.new_dealer }
           clearTimeout(diceTimer)
-          diceTimer = window.setTimeout(() => (dice.value = null), 4000)
+          diceTimer = window.setTimeout(() => (dice.value = null), DICE_MS)
+          playSound('dice')
           const [a, b] = e.dice
           addLog(`${who} melempar dadu: ${a} + ${b} = ${a + b}. Dealer baru: ${seatName(e.new_dealer)}`)
         }
@@ -157,6 +181,7 @@ export const useGameStore = defineStore('game', () => {
       case 'game_state':
         if (view.value?.phase === 'Ended' && m.data.phase !== 'Ended') {
           addLog('— Ronde baru —')
+          handOrder.value = null // tile ids are dealt again
         }
         view.value = m.data
         if (m.data.time_left_ms > 0 && m.data.phase !== 'Ended') {
@@ -320,6 +345,8 @@ export const useGameStore = defineStore('game', () => {
     error.value = null
     deadline.value = null
     replaced.value = false
+    callout.value = null
+    handOrder.value = null
   }
 
   // Waiting room, host only (the server checks).
@@ -356,16 +383,26 @@ export const useGameStore = defineStore('game', () => {
     }
   }
 
+  /** The player dragged a tile: ids is the new screen order. */
+  function arrangeHand(ids: number[]) {
+    handOrder.value = ids
+  }
+
+  /** Back to the server's sorted order. */
+  function sortHand() {
+    handOrder.value = null
+  }
+
   function nextRound() {
     conn.send('next_round')
   }
 
   return {
-    room, view, log, error, dice, deadline, timeLimit, lobbyError, reconnecting, replaced,
+    room, view, log, error, dice, callout, handOrder, deadline, timeLimit, lobbyError, reconnecting, replaced,
     mySeat, isHost, isSolo, legal, result, discardable,
     seatName, resultText,
     startSolo, createRoom, joinRoom, leave, goToLobby, resumeSession, reconnectNow,
     addBot, removeBot, fillWithBots, updateSettings, startGame,
-    discard, act, nextRound,
+    discard, act, nextRound, arrangeHand, sortHand,
   }
 })

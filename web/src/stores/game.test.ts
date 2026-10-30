@@ -218,8 +218,35 @@ describe('playing', () => {
     ws.receive({ type: 'event', data: { type: 'dice_rolled', seat: 0, dice: [3, 4], new_dealer: 2 } })
     expect(game.log).toEqual(['Kursi 2 membuang 3 Titik', 'Kamu melempar dadu: 3 + 4 = 7. Dealer baru: Kursi 3'])
     expect(game.dice).toEqual({ dice: [3, 4], newDealer: 2 })
-    vi.advanceTimersByTime(4000)
+    vi.advanceTimersByTime(4500)
     expect(game.dice).toBeNull()
+  })
+
+  it('calls out claims and wins over the seat', () => {
+    const { game, ws } = inGame()
+    ws.receive({ type: 'event', data: { type: 'claimed', seat: 2, meld: 'pung', tiles: [] } })
+    expect(game.callout).toMatchObject({ seat: 2, text: 'Pung!' })
+    const win = { draw: false, winner: 3, from: 1, self_draw: false, win_tile: { id: 1, kind: 1 } }
+    ws.receive({ type: 'event', data: { type: 'game_end', seat: 3, result: win } })
+    expect(game.callout).toMatchObject({ seat: 3, text: 'Hu!' })
+    vi.advanceTimersByTime(1600)
+    expect(game.callout).toBeNull()
+  })
+
+  it('keeps the player hand order until the next round', () => {
+    const { game, ws } = inGame()
+    ws.receive({ type: 'game_state', data: view() })
+    game.arrangeHand([4, 0])
+    expect(game.handOrder).toEqual([4, 0])
+    ws.receive({ type: 'game_state', data: view({ wall_remaining: 79 }) })
+    expect(game.handOrder).toEqual([4, 0])
+    game.sortHand()
+    expect(game.handOrder).toBeNull()
+
+    game.arrangeHand([4, 0])
+    ws.receive({ type: 'game_state', data: view({ phase: 'Ended' }) })
+    ws.receive({ type: 'game_state', data: view() }) // a new deal: ids mean other tiles now
+    expect(game.handOrder).toBeNull()
   })
 
   it('shows server errors for a few seconds', () => {

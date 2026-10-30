@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useGameStore } from '../stores/game'
 import { cleanPrefs, toSettings, type Prefs } from '../settings'
 import SettingsForm from '../components/SettingsForm.vue'
+import { canInstall, installApp } from '../pwa'
 
 const game = useGameStore()
 const NAME_KEY = 'mahjong.name'
@@ -102,6 +103,10 @@ function joinRoom() {
         <SettingsForm v-model="prefs" id-prefix="lobby" />
       </details>
     </div>
+
+    <button v-if="canInstall" type="button" class="install" @click="installApp">
+      📲 Pasang sebagai aplikasi
+    </button>
   </main>
 </template>
 
@@ -185,5 +190,15 @@ input {
   border-radius: 12px;
 }
 .settings summary { cursor: pointer; color: #ffcf3f; font-weight: 700; }
+.install {
+  padding: 10px 18px;
+  border: 1px solid rgba(255, 207, 63, 0.6);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.2);
+  color: #fff8e0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
 .settings[open] summary { margin-bottom: 10px; }
 </style>

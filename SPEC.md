@@ -246,6 +246,20 @@ Halaman:
 - **Table:** 4 kursi (diri sendiri di bawah), tangan, tile buangan per pemain, set terbuka, bonus tile, sisa wall, tombol aksi (Chi/Pung/Kong/Hu/Pass), penghitung waktu.
 
 Tile dirender dengan gambar PNG di `web/src/assets/tiles` (pemetaan nama file ada di `web/src/tiles.ts`).
+
+Pengalaman bermain (M8):
+- Animasi buang, ambil, set baru, teriakan klaim di atas kursi ("Chi!", "Pung!", "Kong!", "Hu!"),
+  dan dadu yang berputar sebelum menunjukkan hasil dari server. Semua animasi mati jika sistem
+  meminta gerak dikurangi (`prefers-reduced-motion`).
+- Suara disintesis dengan Web Audio (buang, klaim, giliranmu, menang/selesai, dadu); bisu disimpan
+  di `localStorage`.
+- Pemain boleh menyusun tangan sendiri dengan menyeret tile. Susunan hanya tampilan di klien
+  (server tetap mengirim tangan terurut) dan direset tiap ronde baru.
+- HP (lebar <= 720px, atau landscape dengan tinggi <= 500px): meja muat satu layar tanpa scroll.
+  Di layar sentuh, membuang butuh dua ketukan agar tidak salah buang.
+- PWA: `web/public/manifest.webmanifest`, `web/public/sw.js` (hanya meng-cache halaman dan aset,
+  tidak menyentuh `/ws`). Server memberi `Cache-Control: immutable` untuk `/assets/` dan `no-cache`
+  untuk berkas lain agar versi baru langsung terpakai.
 State hanya dari Pinia store yang diisi pesan server. Klien tidak menghitung aturan.
 
 ## 10. Persyaratan Test
@@ -289,7 +303,7 @@ di bagian 13 dulu sebelum mulai mengerjakan.
 | Milestone | Isi | Perkiraan |
 |---|---|---|
 | M7 | Stabilitas dan test otomatis (selesai) | Minggu 11-12 |
-| M8 | Pengalaman bermain di meja | Minggu 12-14 |
+| M8 | Pengalaman bermain di meja (selesai) | Minggu 12-14 |
 | M9 | Fitur room dan sosial | Minggu 14-16 |
 | M10 | Bot v2 dan tingkat kesulitan | Minggu 16-18 |
 | M11 | Skor dan aturan opsional **[PERLU KEPUTUSAN]** | Minggu 18-21 |
@@ -304,7 +318,7 @@ di bagian 13 dulu sebelum mulai mengerjakan.
 - Log terstruktur (`log/slog`) untuk room dibuat/ditutup, error, dan reconnect.
 - Selesai jika: CI hijau, test e2e berjalan di CI, server tetap stabil saat dikirimi pesan sampah.
 
-**M8: Pengalaman bermain di meja**
+**M8: Pengalaman bermain di meja (selesai)**
 - Animasi ambil, buang, dan klaim; animasi lempar dadu (bagian 4.7 menyebut klien menampilkan animasi dadu).
 - Suara (buang, klaim, giliranmu, menang) dengan tombol bisu yang diingat di `localStorage`.
 - Tangan bisa diurutkan ulang manual (seret), selain urutan otomatis.

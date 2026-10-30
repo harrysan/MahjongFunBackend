@@ -17,7 +17,20 @@ body {
 
 button:focus-visible { outline: 3px solid #ffcf3f; outline-offset: 2px; }
 
+/* Phones (keep in sync with COMPACT_QUERY in src/media.ts). */
 @media (max-width: 720px) {
-  /* 14 tiles must fit across a phone screen */
-  :root { --tile-w: clamp(20px, 6.2vw, 36px); }
+  /* the hand wraps into two rows of seven, so the tiles can be big enough to tap */
+  :root { --tile-w: min(48px, calc((100vw - 48px) / 8)); }
+}
+@media (max-height: 500px) and (orientation: landscape) {
+  /* sized by the height too, so the whole table fits without scrolling */
+  :root { --tile-w: min(46px, calc((100vw - 64px) / 15.5), 11dvh); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

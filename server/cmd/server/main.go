@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -55,7 +56,7 @@ func main() {
 		OriginPatterns: strings.Split(*origins, ","),
 	})
 	if *web != "" {
-		mux.Handle("/", http.FileServer(http.Dir(*web)))
+		mux.Handle("/", staticFiles(*web))
 	}
 
 	slog.Info("mahjong server listening", "addr", *addr, "web", *web)
@@ -85,6 +86,24 @@ func main() {
 	ctx, done := context.WithTimeout(context.Background(), 5*time.Second)
 	defer done()
 	_ = srv.Shutdown(ctx) // open WebSockets are hijacked; Shutdown does not wait for them
+}
+
+// staticFiles serves the built frontend. Files under /assets/ have a content
+// hash in their name, so browsers may keep them for good; everything else
+// (the page, the service worker, the manifest) is checked on every load so a
+// new version shows up at once.
+func staticFiles(dir string) http.Handler {
+	// Not in Go's built-in table; browsers want it for the PWA manifest.
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+	files := http.FileServer(http.Dir(dir))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		files.ServeHTTP(w, r)
+	})
 }
 
 func newLogger(level, format string) (*slog.Logger, error) {

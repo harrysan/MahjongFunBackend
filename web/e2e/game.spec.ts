@@ -45,10 +45,13 @@ test('solo: play a full round, then start the next one', async ({ page }) => {
 
   await playRound(page)
   await expectRoundResult(page)
+  const draw = (await resultDialog(page).getByRole('heading').textContent()) === 'Seri'
 
   await page.getByRole('button', { name: 'Ronde berikutnya' }).click()
   await expect(resultDialog(page)).toBeHidden()
   await expect(page.getByText('— Ronde baru —')).toBeVisible()
+  // After a win the winner rolls the dice for the next dealer (SPEC 4.7).
+  if (!draw) await expect(page.locator('.dice-roll')).toContainText('Dealer baru')
 })
 
 test('multiplayer: two players and two bots finish a round', async ({ browser }) => {
